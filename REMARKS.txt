@@ -1,0 +1,129 @@
+# Mac/Linux
+python3 -m venv venv
+source venv/bin/activate
+
+
+step1
+python3 server.py
+
+step2
+cd static
+python3 -m http.server 8000
+
+step3
+打開瀏覽器訪問
+http://localhost:8000/fox_ai_optimized.html
+
+----------------------------------------------------------------------------------------------------------------------
+
+方法 3：使用 API 添加問答
+如果你想通過程式添加，可以使用 API：
+pythonimport requests
+import json
+
+# API 端點
+api_url = "http://localhost:5000/api/knowledge/qa-pairs"
+
+# 新的問答對
+new_qa = {
+    "category": "學校活動",
+    "questions": [
+        "學校有什麼課外活動？",
+        "有咩課外活動可以參加？",
+        "學校的興趣班有哪些？"
+    ],
+    "answer": "我們學校有很多課外活動，包括：籃球隊、足球隊、合唱團、美術學會、科學學會等。同學們可以根據自己的興趣選擇參加！"
+}
+
+# 發送請求
+response = requests.post(api_url, json=new_qa)
+print(response.json())
+
+-----------------------------------------------------------------------------------------------------------------------
+
+# 查找占用 5000 端口的进程
+sudo lsof -i :5000
+
+# 或者使用
+sudo netstat -tlnp | grep 5000
+
+# 终止进程（假设 PID 是 12345）
+kill -9 12345
+
+-------------------------------------------------------------------------------------------------------------------------------
+
+ 快速測試命令
+測試 TTS
+bashcurl -X POST http://localhost:5000/api/tts/stream \
+  -H "Content-Type: application/json" \
+  -d '{"text": "你好，我係小狐狸"}' \
+  --output test.mp4
+  
+測試聊天
+bashcurl -X POST http://localhost:5000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "你好", "model": "deepseek-chat"}'
+  
+----------------------------------------------------------------------------------------------------------------------------
+# 使用這個命令關閉所有 Python 服務器進程
+pkill -f "python.*server.py"
+
+
+---------------------------------------------------------------------------------------------------------------------------
+我有一個 FastAPI 項目，請查看 llm_context.md 了解結構。
+
+關於聊天處理函數：
+- chat_with_deepseek(req: ChatRequest)
+- handle_together_request(prompt: str, model_config: dict, response_length: str)
+- chat_with_qwen(req: ChatRequest)
+- chat_with_gemini(req: ChatRequest)
+
+我需要：[您的具體需求]
+---------------------------------------------------------------------------------------------------------------------------
+我有一個 FastAPI 項目，請查看 llm_context.md 了解當前結構。
+
+我想要整合兩個新功能模組：
+1. knowledge_base.py - SQLite 資料庫版的知識庫系統
+2. weather_service.py - 天氣查詢服務
+
+當前狀態：
+- server_qwen.py 中已有簡單的記憶體版知識庫
+- 需要升級為 SQLite 版本並加入天氣功能
+
+要求：
+1. 不要修改任何標記為 LLM-SKIP 的區塊
+2. 不要修改 chat_with_* 和 handle_together_request 等 AI 處理函數
+3. 在 /api/chat 路由中整合天氣查詢功能
+4. 保持向後兼容性
+
+請提供：
+1. 需要在 server_qwen.py 中修改的具體位置和代碼
+2. 如何在不破壞現有功能的情況下完成整合
+-------------------------------------------------------------------------------------------------------------------------
+我需要在現有的 FastAPI 專案中整合兩個新功能。請先閱讀：
+- llm_context.md（了解專案結構）
+- knowledge_base.py（新的 SQLite 知識庫）
+- weather_service.py（天氣查詢服務）
+
+整合需求：
+
+### 1. 知識庫升級
+- 當前：server_qwen.py 使用記憶體版 KnowledgeBase
+- 目標：替換為 knowledge_base.py 的 SQLite 版本
+- 保留現有 API 端點：
+  - GET /api/knowledge/qa-pairs
+  - POST /api/knowledge/qa-pairs
+  - POST /api/knowledge/qa-pairs/{qa_id}/toggle
+  - DELETE /api/knowledge/qa-pairs/{qa_id}
+
+### 2. 天氣功能整合
+- 在 chat() 函數中，知識庫查詢後、AI 模型前加入天氣判斷
+- 如果是天氣問題，直接返回天氣結果，不調用 AI 模型
+- 天氣回答使用流式響應格式
+
+### 3. 限制條件
+- 保持所有 CHAT HANDLERS 不變
+- 保持 TTS 系統不變
+- 最小化對現有代碼的修改
+
+請分步驟說明如何實施。

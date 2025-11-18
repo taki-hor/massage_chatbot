@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser TTS Voices Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; }
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 5px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background: #4CAF50;
+            color: white;
+        }
+        button:hover { background: #45a049; }
+        .voice-list {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #4CAF50;
+            color: white;
+        }
+        tr:hover { background: #f5f5f5; }
+        .female { background: #ffe6f0; }
+        .male { background: #e6f3ff; }
+        .hk { font-weight: bold; color: #e91e63; }
+        .test-btn {
+            padding: 5px 10px;
+            font-size: 12px;
+            background: #2196F3;
+        }
+        .test-btn:hover { background: #0b7dda; }
+    </style>
+</head>
+<body>
+    <h1>🎤 Browser TTS Voices Available</h1>
+
+    <div class="controls">
+        <h2>Test Text</h2>
+        <input type="text" id="testText" value="您好！需要咩護理服務嗎？" style="width: 400px; padding: 10px; font-size: 16px;">
+        <br><br>
+        <button onclick="loadVoices()">🔄 Refresh Voice List</button>
+        <button onclick="testFemaleSelection()">🎀 Test Female Voice Selection</button>
+        <button onclick="testMaleSelection()">👔 Test Male Voice Selection</button>
+    </div>
+
+    <div class="voice-list">
+        <h2>Available Voices (<span id="voiceCount">0</span> total)</h2>
+        <table id="voiceTable">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Name</th>
+                    <th>Language</th>
+                    <th>Gender</th>
+                    <th>Local</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody id="voiceTableBody">
+            </tbody>
+        </table>
+    </div>
+
+    <div id="results" style="margin-top: 20px;"></div>
+
+    <script>
+        let allVoices = [];
+
+        function loadVoices() {
+            allVoices = speechSynthesis.getVoices();
+            document.getElementById('voiceCount').textContent = allVoices.length;
+
+            const tbody = document.getElementById('voiceTableBody');
+            tbody.innerHTML = '';
+
+            // Filter and sort: HK voices first, then Chinese, then female voices
+            const sortedVoices = allVoices.sort((a, b) => {
+                const aHK = a.lang.includes('HK') ? 1000 : 0;
+                const bHK = b.lang.includes('HK') ? 1000 : 0;
+                const aChinese = a.lang.includes('zh') ? 100 : 0;
+                const bChinese = b.lang.includes('zh') ? 100 : 0;
+                const aFemale = a.name.toLowerCase().includes('female') || a.name.toLowerCase().includes('woman') ? 10 : 0;
+                const bFemale = b.name.toLowerCase().includes('female') || b.name.toLowerCase().includes('woman') ? 10 : 0;
+
+                return (bHK + bChinese + bFemale) - (aHK + aChinese + aFemale);
+            });
+
+            sortedVoices.forEach((voice, index) => {
+                const row = tbody.insertRow();
+
+                // Detect gender from name
+                const isFemale = voice.name.toLowerCase().includes('female') ||
+                                voice.name.toLowerCase().includes('woman') ||
+                                voice.name.includes('Hiu');
+                const isMale = voice.name.toLowerCase().includes('male') ||
+                              voice.name.toLowerCase().includes('man') ||
+                              voice.name.includes('Danny') ||
+                              voice.name.includes('Wan');
+
+                const isHK = voice.lang.includes('HK');
+
+                if (isFemale) row.className = 'female';
+                if (isMale) row.className = 'male';
+
+                row.innerHTML = `
+                    <td>${index + 1}</td>
+                    <td class="${isHK ? 'hk' : ''}">${voice.name}</td>
+                    <td class="${isHK ? 'hk' : ''}">${voice.lang}</td>
+                    <td>${isFemale ? '👩 Female' : (isMale ? '👨 Male' : '❓ Unknown')}</td>
+                    <td>${voice.localService ? '✅' : '☁️'}</td>
+                    <td><button class="test-btn" onclick="testVoice(${index})">🔊 Test</button></td>
+                `;
+            });
+
+            console.log('All voices:', allVoices);
+            highlightBestVoices();
+        }
+
+        function highlightBestVoices() {
+            const results = document.getElementById('results');
+            const hkFemale = allVoices.filter(v =>
+                v.lang.toLowerCase().includes('zh-hk') &&
+                (v.name.toLowerCase().includes('female') || v.name.toLowerCase().includes('woman') || v.name.includes('Hiu'))
+            );
+            const hkMale = allVoices.filter(v =>
+                v.lang.toLowerCase().includes('zh-hk') &&
+                (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('man') || v.name.includes('Danny'))
+            );
+            const hkAll = allVoices.filter(v => v.lang.toLowerCase().includes('zh-hk'));
+
+            results.innerHTML = `
+                <div class="controls">
+                    <h2>🎯 Best Voice Candidates</h2>
+                    <p><strong>HK Female Voices:</strong> ${hkFemale.length > 0 ? hkFemale.map(v => v.name).join(', ') : '❌ None found'}</p>
+                    <p><strong>HK Male Voices:</strong> ${hkMale.length > 0 ? hkMale.map(v => v.name).join(', ') : '❌ None found'}</p>
+                    <p><strong>All HK Voices:</strong> ${hkAll.length > 0 ? hkAll.map(v => v.name).join(', ') : '❌ None found'}</p>
+                </div>
+            `;
+        }
+
+        function testVoice(index) {
+            const voice = allVoices[index];
+            const text = document.getElementById('testText').value;
+
+            speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.voice = voice;
+            utterance.lang = voice.lang;
+            utterance.rate = 1.0;
+            utterance.pitch = 1.1;
+
+            console.log(`Testing voice: ${voice.name} (${voice.lang})`);
+            speechSynthesis.speak(utterance);
+        }
+
+        function testFemaleSelection() {
+            const voices = allVoices;
+            const text = document.getElementById('testText').value;
+
+            // Simulate the app.js female voice selection logic
+            let selectedVoice = voices.find(v =>
+                v.lang?.toLowerCase().startsWith('zh-hk') &&
+                (v.name?.toLowerCase().includes('female') || v.name?.toLowerCase().includes('woman'))
+            ) || voices.find(v => v.lang?.toLowerCase().startsWith('zh-hk'))
+              || voices.find(v => v.name?.includes('Hiu') || v.lang?.includes('yue'))
+              || voices.find(v =>
+                v.lang?.toLowerCase().includes('zh') &&
+                (v.name?.toLowerCase().includes('female') || v.name?.toLowerCase().includes('woman'))
+              )
+              || voices.find(v => v.lang?.toLowerCase().includes('zh'));
+
+            if (selectedVoice) {
+                console.log(`✅ Selected female voice: ${selectedVoice.name} (${selectedVoice.lang})`);
+                alert(`Selected: ${selectedVoice.name}\nLanguage: ${selectedVoice.lang}\nTesting now...`);
+                testVoice(allVoices.indexOf(selectedVoice));
+            } else {
+                alert('❌ No suitable female voice found');
+            }
+        }
+
+        function testMaleSelection() {
+            const voices = allVoices;
+            const text = document.getElementById('testText').value;
+
+            let selectedVoice = voices.find(v =>
+                v.lang?.toLowerCase().startsWith('zh-hk') &&
+                (v.name?.toLowerCase().includes('male') || v.name?.toLowerCase().includes('man'))
+            ) || voices.find(v => v.lang?.toLowerCase().startsWith('zh-hk'));
+
+            if (selectedVoice) {
+                console.log(`✅ Selected male voice: ${selectedVoice.name} (${selectedVoice.lang})`);
+                alert(`Selected: ${selectedVoice.name}\nLanguage: ${selectedVoice.lang}\nTesting now...`);
+                testVoice(allVoices.indexOf(selectedVoice));
+            } else {
+                alert('❌ No suitable male voice found');
+            }
+        }
+
+        // Load voices when ready
+        if (speechSynthesis.onvoiceschanged !== undefined) {
+            speechSynthesis.onvoiceschanged = loadVoices;
+        }
+
+        // Also load immediately in case voices are already available
+        setTimeout(loadVoices, 100);
+    </script>
+</body>
+</html>
