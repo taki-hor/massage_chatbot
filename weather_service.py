@@ -1,8 +1,6 @@
 import httpx
-import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from datetime import datetime, timedelta
-import json
 import logging
 import asyncio
 from functools import lru_cache

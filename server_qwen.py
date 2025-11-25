@@ -47,9 +47,7 @@ from knowledge_base import KnowledgeBase
 from weather_service import WeatherService
 
 # ===== SSL FIX - TEMPORARY =====
-import ssl
-import os
-
+# Note: ssl and os are already imported above
 os.environ['PYTHONHTTPSVERIFY'] = '0'
 
 _original_create_default_context = ssl.create_default_context
@@ -962,8 +960,25 @@ async def _synthesize_with_azure(text: str, req: TTSRequest, start_time: float):
 
         speech_config.speech_synthesis_voice_name = voice_name
 
-        # Set speaking rate and pitch (Azure uses SSML for this, but we'll use defaults for now)
-        # TODO: Add SSML support for rate/pitch control
+        # Build SSML with rate and pitch control
+        # Convert rate (default 160 = 160%) to SSML format
+        # Convert pitch (default 100 = 100% = no change) to relative percentage
+        rate_percent = req.rate  # Already a percentage (e.g., 160 = 160%)
+        pitch_offset = req.pitch - 100  # 100 is baseline, so pitch=120 -> +20%
+
+        # Escape XML special characters in text
+        import html
+        escaped_text = html.escape(text)
+
+        ssml = f'''<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-HK">
+    <voice name="{voice_name}">
+        <prosody rate="{rate_percent}%" pitch="{pitch_offset:+d}%">
+            {escaped_text}
+        </prosody>
+    </voice>
+</speak>'''
+
+        logger.debug(f"🔊 Azure TTS SSML: rate={rate_percent}%, pitch={pitch_offset:+d}%")
 
         # Configure to synthesize to default output (internal buffer)
         # We'll extract audio_data from the result
@@ -972,11 +987,11 @@ async def _synthesize_with_azure(text: str, req: TTSRequest, start_time: float):
             audio_config=None  # None = synthesize to internal buffer
         )
 
-        # Synthesize (run in thread pool to not block event loop)
+        # Synthesize using SSML (run in thread pool to not block event loop)
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: synthesizer.speak_text_async(text).get()
+            lambda: synthesizer.speak_ssml_async(ssml).get()
         )
 
         # Check result

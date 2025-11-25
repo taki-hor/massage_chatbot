@@ -15,7 +15,7 @@ REPORTS_DIR.mkdir(exist_ok=True)
 
 # File patterns to scan
 SCAN_PATTERNS = ["*.py", "*.js", "*.html", "*.css"]
-EXCLUDE_DIRS = ["node_modules", ".git", "__pycache__", "artifacts", "venv"]
+EXCLUDE_DIRS = ["node_modules", ".git", "__pycache__", "artifacts", "venv", "tests"]
 
 # Markers to search for
 MARKERS = {

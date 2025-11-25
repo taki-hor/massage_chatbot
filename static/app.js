@@ -1,4 +1,21 @@
 // ===== 配置 =====
+        // 生產環境調試開關 - 設置為 false 以禁用 console.log 輸出
+        const DEBUG_MODE = window.DEBUG_MODE !== undefined ? window.DEBUG_MODE : true;
+
+        // 保存原始 console 方法
+        const _originalConsole = {
+            log: console.log.bind(console),
+            debug: console.debug.bind(console),
+            info: console.info.bind(console)
+        };
+
+        // 條件性日誌包裝器
+        if (!DEBUG_MODE) {
+            console.log = function() {};
+            console.debug = function() {};
+            console.info = function() {};
+        }
+
         // 使用後端注入的服務器配置，或回退到當前位置推斷
         const serverConfig = window.SERVER_CONFIG || {
             port: window.location.port || '5000',
@@ -2400,7 +2417,6 @@
                 console.log('✅ Matched SLOWER command');
                 playCommandBeep('adjust');
                 await speakNurseResponse("好，我慢啲按。");
-                // TODO: Send speed adjustment command to robot
                 sendRobotCommand('speed_slower');
             }
             // 🐇 Faster speed
@@ -2409,7 +2425,6 @@
                 console.log('✅ Matched FASTER command');
                 playCommandBeep('adjust');
                 await speakNurseResponse("好，我快啲按。");
-                // TODO: Send speed adjustment command to robot
                 sendRobotCommand('speed_faster');
             }
             // 🎯 Body Part Change (部位)
