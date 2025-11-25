@@ -1741,8 +1741,24 @@
                     return;
                 }
 
+                // ============================================================
+                // 🔧 CRITICAL: Session starts IMMEDIATELY - TTS is decoupled
+                // Task state is committed FIRST, TTS is fire-and-forget
+                // ============================================================
                 isMassageSessionActive = true;
                 console.log('🎯 Massage session started - Continuous listening enabled.');
+
+                // Emit task started event (TTS can subscribe to this)
+                if (window.TTSInfrastructure?.EventBus) {
+                    window.TTSInfrastructure.EventBus.emit(
+                        window.TTSInfrastructure.TTSEvents.TASK_STARTED,
+                        {
+                            taskId: Date.now(),
+                            command: this.command,
+                            timestamp: Date.now()
+                        }
+                    );
+                }
 
                 createEmergencyStopButton();
                 createPauseResumeButton();
@@ -1755,19 +1771,28 @@
                     .replace('{action}', this.command.action || '按摩')
                     .replace('{duration}', this.command.duration || '5');
 
-                // 🔧 FIX: Decouple session start from TTS success.
-                // Start the timer and listening immediately.
+                // ============================================================
+                // 🔧 DECOUPLED: Timer and listening start IMMEDIATELY
+                // These are NOT blocked by TTS success/failure
+                // ============================================================
                 this.progressInterval = setInterval(() => {
                     this.checkProgress();
                 }, 1000);
                 startContinuousMassageListening();
 
-                // Fire-and-forget the announcement. It will play if it can, but won't block the session.
+                // ============================================================
+                // 🔧 FIRE-AND-FORGET: TTS announcement doesn't block session
+                // If TTS fails, session still runs correctly
+                // ============================================================
                 (async () => {
                     try {
                         await updateProgressWithDialogue(0, startDialogue);
                     } catch (e) {
+                        // TTS failed but session is already running - this is OK
                         console.warn('⚠️ Initial TTS announcement failed, but session started correctly. Error:', e);
+
+                        // Show a visual fallback message since TTS failed
+                        addSystemMessage(`🎤 語音提示暫時無法播放，但按摩已開始。${startDialogue}`, 'info');
                     }
                 })();
             }
@@ -1965,13 +1990,32 @@
                     .replace('{duration}', this.command.duration)
                     .replace('{bodyPart}', this.command.bodyPart);
 
-                // Speak completion message BEFORE deactivating session (to use server TTS)
-                await updateProgressWithDialogue(100, completeDialogue);
+                // ============================================================
+                // 🔧 DECOUPLED: Completion message is fire-and-forget
+                // Session ends regardless of TTS success
+                // ============================================================
+                try {
+                    await updateProgressWithDialogue(100, completeDialogue);
+                } catch (e) {
+                    console.warn('⚠️ Completion TTS failed, showing fallback message:', e);
+                    addSystemMessage(`✅ ${completeDialogue}`, 'info');
+                }
 
                 // NOW deactivate the session after speaking
                 isMassageSessionActive = false;
                 stopContinuousMassageListening();
                 console.log('✅ Massage session stopped - Continuous listening disabled.');
+
+                // Emit task completed event
+                if (window.TTSInfrastructure?.EventBus) {
+                    window.TTSInfrastructure.EventBus.emit(
+                        window.TTSInfrastructure.TTSEvents.TASK_COMPLETED,
+                        {
+                            command: this.command,
+                            timestamp: Date.now()
+                        }
+                    );
+                }
 
                 // Resume wake word detection for normal mode
                 setTimeout(() => {
@@ -2527,20 +2571,51 @@
         }
 
         // Speak response as nurse
+        // ============================================================
+        // 🔧 OPTIMIZED: Event-driven TTS with graceful degradation
+        // TTS failures will NOT block task execution or crash UI
+        // ============================================================
         async function speakNurseResponse(text, customVoice = null) {
-            if (!document.getElementById('autoSpeak').checked) {
+            if (!document.getElementById('autoSpeak')?.checked) {
                 return;
             }
 
             const cleanText = preprocessForCantoneseTTS(stripHTML(text));
 
+            // ✅ Use RobustTTS infrastructure when available
+            if (window.robustTTS) {
+                try {
+                    // During massage session, use high priority
+                    if (isMassageSessionActive) {
+                        console.log('🎤 Massage session: Using RobustTTS (high priority)');
+                        await window.robustTTS.speakAsync(cleanText, {
+                            voice: customVoice,
+                            priority: 'high'
+                        });
+                    } else {
+                        // Normal mode: non-blocking
+                        window.robustTTS.speak(cleanText, {
+                            voice: customVoice,
+                            priority: 'normal'
+                        });
+                    }
+                } catch (error) {
+                    // TTS error should NOT crash the app - just log it
+                    console.warn('[speakNurseResponse] TTS error (non-fatal):', error.message);
+                }
+                return;
+            }
+
+            // ============================================================
+            // LEGACY FALLBACK: Original implementation
+            // ============================================================
             // ✅ During massage session, ALWAYS use server TTS (never browser fallback)
             if (isMassageSessionActive) {
                 console.log('🎤 Massage session: Using server TTS');
                 await playCantoneseTTS(cleanText, customVoice);
                 return;
             }
-            
+
             // Normal mode: Use UltraFastTTS or fallback
             if (window.ultraFastTTS && typeof window.ultraFastTTS.addText === 'function') {
                 window.ultraFastTTS.addText(cleanText);
@@ -3276,22 +3351,89 @@
         }
 
         function stopCurrentTTS() {
+            // ============================================================
+            // 🔧 OPTIMIZED: Stop RobustTTS if available
+            // ============================================================
+            if (window.robustTTS) {
+                window.robustTTS.stop(true); // Stop and clear queue
+                console.log('🛑 Stopped RobustTTS');
+            }
+
+            // Also stop legacy audio if present
             if (currentTTSAudio) {
                 console.log('🛑 Stopping current TTS audio');
                 currentTTSAudio.pause();
                 currentTTSAudio.currentTime = 0;
                 currentTTSAudio = null;
-
-                const indicator = document.getElementById('speakingIndicator');
-                if (indicator) indicator.classList.remove('active');
-                setFoxState(null);
             }
+
+            // Stop browser speech synthesis
+            if ('speechSynthesis' in window) {
+                speechSynthesis.cancel();
+            }
+
+            const indicator = document.getElementById('speakingIndicator');
+            if (indicator) indicator.classList.remove('active');
+            setFoxState(null);
 
             // Reset the TTS playing flag
             isTTSPlaying = false;
         }
 
         async function playCantoneseTTS(text, customVoice = null, meta = { isFollowUp: false }) {
+            // ============================================================
+            // 🔧 OPTIMIZED: Use RobustTTS Infrastructure when available
+            // This provides: circuit breaker, retry, queue, and decoupling
+            // ============================================================
+            if (window.robustTTS) {
+                const wasListening = isAutoListening;
+                const wasWakeWordActive = wakeWordDetector && wakeWordDetector.isListening;
+
+                // Pause listening during TTS (will auto-resume via onSpeakingEnd callback)
+                if (wasListening) {
+                    console.log("🎤 Pausing continuous listening for TTS (robust mode).");
+                    isIntentionalStop = true;
+                    try { browserRecognition.stop(); } catch(e) { /* ignore */ }
+                }
+                if (wasWakeWordActive) {
+                    console.log("🎤 Stopping wake word detector for TTS.");
+                    wakeWordDetector.stop();
+                }
+
+                const cleanText = stripHTML(text);
+                const processedText = preprocessForCantoneseTTS(cleanText);
+                const selectedVoice = customVoice || document.getElementById('voiceSelect')?.value || 'zh-HK-HiuGaaiNeural';
+
+                // Use speakAsync for blocking calls (like massage dialogues)
+                // This returns immediately but waits for completion
+                try {
+                    await window.robustTTS.speakAsync(processedText, {
+                        voice: selectedVoice,
+                        priority: 'high'
+                    });
+                } catch (error) {
+                    // Error already handled by infrastructure, just log
+                    console.warn('[playCantoneseTTS] TTS completed with error (task continues):', error.message);
+                }
+
+                // Resume wake word if needed (listening resumes via callback)
+                if (wasWakeWordActive && !isMassageSessionActive) {
+                    if (wakeWordDetector && !wakeWordDetector.isListening) {
+                        wakeWordDetector.start();
+                    }
+                }
+
+                // Handle follow-up listening
+                if (meta.isFollowUp && !isMassageSessionActive) {
+                    startFollowUpListening();
+                }
+
+                return; // Done with robust TTS
+            }
+
+            // ============================================================
+            // LEGACY FALLBACK: Original implementation for backward compatibility
+            // ============================================================
             // 🚫 Prevent overlapping TTS: Stop any currently playing or fetching audio first
             if (isTTSPlaying || currentTTSAudio) {
                 console.log('🛑 Stopping previous TTS to prevent overlap');
@@ -4737,6 +4879,70 @@ function autoFillControlsFromText(text) {
             audioQueue = new OptimizedAudioPlayer();
             sentenceDetector = new SmartSentenceDetector();
             initAnswerLevelSetting();
+
+            // ============================================================
+            // 初始化 Robust TTS Infrastructure (解耦 TTS 與任務生成)
+            // ============================================================
+            if (window.TTSInfrastructure) {
+                const { RobustTTSService, EventBus, TTSEvents } = window.TTSInfrastructure;
+
+                window.robustTTS = new RobustTTSService({
+                    apiUrl: API_URL,
+                    defaultVoice: 'zh-HK-HiuGaaiNeural',
+                    maxQueueSize: 10,
+                    onSpeakingStart: () => {
+                        const indicator = document.getElementById('speakingIndicator');
+                        if (indicator) indicator.classList.add('active');
+                        setFoxState('speaking');
+                    },
+                    onSpeakingEnd: () => {
+                        const indicator = document.getElementById('speakingIndicator');
+                        if (indicator) indicator.classList.remove('active');
+                        setFoxState(null);
+
+                        // Resume listening if massage session is active
+                        if (isMassageSessionActive && !isAutoListening) {
+                            safeRestartMassageListening();
+                        }
+                    },
+                    onError: (error) => {
+                        console.warn('[RobustTTS] Error handled gracefully:', error.message);
+                        // Don't crash - just log and continue
+                    }
+                });
+
+                // Subscribe TTS to assistant events (decoupled from task state)
+                EventBus.on(TTSEvents.ASSISTANT_REPLY, (payload) => {
+                    if (document.getElementById('autoSpeak')?.checked) {
+                        window.robustTTS.speak(payload.text, {
+                            voice: payload.voice,
+                            priority: payload.priority || 'normal',
+                            skipIfBusy: payload.skipIfBusy
+                        });
+                    }
+                });
+
+                EventBus.on(TTSEvents.ASSISTANT_DIALOGUE, (payload) => {
+                    if (document.getElementById('autoSpeak')?.checked) {
+                        window.robustTTS.speak(payload.text, {
+                            voice: payload.voice,
+                            priority: 'high' // Dialogues are high priority
+                        });
+                    }
+                });
+
+                // Log TTS status periodically for diagnostics
+                setInterval(() => {
+                    if (window.robustTTS && debugMode) {
+                        const status = window.robustTTS.getStatus();
+                        console.log('[TTS Status]', status.telemetry);
+                    }
+                }, 60000);
+
+                console.log('✅ Robust TTS Infrastructure initialized (Task-TTS decoupled)');
+            } else {
+                console.warn('⚠️ TTS Infrastructure not loaded, using legacy TTS');
+            }
 
             // 初始化控制面板
             initMassageControlPanel();
@@ -6978,3 +7184,119 @@ function autoFillControlsFromText(text) {
             }
             await loadWeather();
         });
+
+        // ============================================================
+        // 🛡️ GLOBAL ERROR BOUNDARY - Prevents UI Crashes
+        // Catches unhandled errors and provides recovery options
+        // ============================================================
+        window.onerror = function(message, source, lineno, colno, error) {
+            console.error('[Global Error Handler]', { message, source, lineno, colno, error });
+
+            // Prevent TTS/audio errors from crashing the UI
+            if (message && (
+                message.includes('TTS') ||
+                message.includes('audio') ||
+                message.includes('speech') ||
+                message.includes('AudioContext')
+            )) {
+                console.warn('🛡️ Audio/TTS error caught - UI remains stable');
+                return true; // Prevent default error handling
+            }
+
+            // If massage session is corrupted, reset it
+            if (isMassageSessionActive && !currentMassageSession) {
+                console.warn('🛡️ Fixing corrupted session state');
+                isMassageSessionActive = false;
+            }
+
+            return false; // Let other errors propagate normally
+        };
+
+        window.addEventListener('unhandledrejection', function(event) {
+            console.error('[Unhandled Promise Rejection]', event.reason);
+
+            // Prevent TTS promise rejections from crashing the app
+            if (event.reason && (
+                String(event.reason).includes('TTS') ||
+                String(event.reason).includes('AbortError') ||
+                String(event.reason).includes('audio') ||
+                String(event.reason).includes('fetch')
+            )) {
+                console.warn('🛡️ TTS/Network promise rejection caught - UI remains stable');
+                event.preventDefault();
+            }
+        });
+
+        // ============================================================
+        // 🔧 TTS STATUS INDICATOR - Shows TTS health in console
+        // ============================================================
+        window.getTTSStatus = function() {
+            if (window.robustTTS) {
+                const status = window.robustTTS.getStatus();
+                console.log('=== TTS Status Report ===');
+                console.log('Speech Lane:', status.speechLane);
+                console.log('Providers:', status.providers);
+                console.log('Telemetry:', status.telemetry);
+                return status;
+            } else {
+                console.log('RobustTTS not initialized, using legacy TTS');
+                return { legacy: true, isTTSPlaying, hasCurrentAudio: !!currentTTSAudio };
+            }
+        };
+
+        // ============================================================
+        // 🔄 RECOVERY FUNCTIONS - Manual recovery options
+        // ============================================================
+        window.resetTTSSystem = function() {
+            console.log('🔄 Resetting TTS system...');
+
+            // Stop all TTS
+            stopCurrentTTS();
+
+            // Reset robust TTS if available
+            if (window.robustTTS) {
+                window.robustTTS.stop(true);
+                window.robustTTS.providerManager.resetAllCircuits();
+            }
+
+            // Reset flags
+            isTTSPlaying = false;
+            currentTTSAudio = null;
+
+            console.log('✅ TTS system reset complete');
+        };
+
+        window.resetMassageSession = function() {
+            console.log('🔄 Resetting massage session...');
+
+            // Emergency stop if session exists
+            if (currentMassageSession) {
+                try {
+                    currentMassageSession.emergencyStop();
+                } catch (e) {
+                    console.warn('Error during emergency stop:', e);
+                }
+            }
+
+            // Force reset all state
+            isMassageSessionActive = false;
+            currentMassageSession = null;
+            stopContinuousMassageListening();
+            stopCurrentTTS();
+
+            // Clean up UI
+            const progressDiv = document.getElementById('massageProgress');
+            if (progressDiv) progressDiv.remove();
+
+            removeEmergencyStopButton();
+            removePauseResumeButton();
+            hideQuickResponseButtons();
+
+            const liveControls = document.querySelector('.live-controls');
+            if (liveControls) liveControls.style.display = 'none';
+
+            console.log('✅ Massage session reset complete');
+        };
+
+        console.log('🛡️ Global error boundaries installed');
+        console.log('💡 Debug commands: getTTSStatus(), resetTTSSystem(), resetMassageSession()');
