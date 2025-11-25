@@ -1140,7 +1140,791 @@ class RobustTTSService {
 }
 
 // ============================================================================
-// 8. EXPORTS
+// 8. UI ERROR NOTIFICATION SYSTEM
+// ============================================================================
+
+class TTSNotification {
+    constructor() {
+        this.container = null;
+        this.queue = [];
+        this.isShowing = false;
+        this.maxVisible = 3;
+        this._createContainer();
+    }
+
+    _createContainer() {
+        // Check if container already exists
+        if (document.getElementById('tts-notification-container')) {
+            this.container = document.getElementById('tts-notification-container');
+            return;
+        }
+
+        this.container = document.createElement('div');
+        this.container.id = 'tts-notification-container';
+        this.container.style.cssText = `
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-width: 360px;
+            pointer-events: none;
+        `;
+        document.body.appendChild(this.container);
+    }
+
+    /**
+     * Show a notification
+     * @param {Object} options - Notification options
+     * @param {string} options.type - 'error', 'warning', 'success', 'info'
+     * @param {string} options.title - Notification title
+     * @param {string} options.message - Notification message
+     * @param {Function} [options.onRetry] - Retry callback
+     * @param {Function} [options.onDismiss] - Dismiss callback
+     * @param {number} [options.duration] - Auto-dismiss duration (ms), 0 for manual
+     */
+    show(options) {
+        const {
+            type = 'info',
+            title = '',
+            message = '',
+            onRetry = null,
+            onDismiss = null,
+            duration = 5000
+        } = options;
+
+        const notification = this._createNotification({ type, title, message, onRetry, onDismiss });
+        this.container.appendChild(notification);
+
+        // Animate in
+        requestAnimationFrame(() => {
+            notification.style.transform = 'translateX(0)';
+            notification.style.opacity = '1';
+        });
+
+        // Auto-dismiss
+        if (duration > 0) {
+            setTimeout(() => this._dismiss(notification, onDismiss), duration);
+        }
+
+        // Limit visible notifications
+        const notifications = this.container.children;
+        if (notifications.length > this.maxVisible) {
+            this._dismiss(notifications[0]);
+        }
+
+        return notification;
+    }
+
+    _createNotification({ type, title, message, onRetry, onDismiss }) {
+        const colors = {
+            error: { bg: '#fee2e2', border: '#ef4444', icon: '❌' },
+            warning: { bg: '#fef3c7', border: '#f59e0b', icon: '⚠️' },
+            success: { bg: '#d1fae5', border: '#10b981', icon: '✅' },
+            info: { bg: '#dbeafe', border: '#3b82f6', icon: 'ℹ️' }
+        };
+
+        const color = colors[type] || colors.info;
+
+        const el = document.createElement('div');
+        el.style.cssText = `
+            background: ${color.bg};
+            border: 1px solid ${color.border};
+            border-left: 4px solid ${color.border};
+            border-radius: 8px;
+            padding: 12px 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            transform: translateX(120%);
+            opacity: 0;
+            transition: all 0.3s ease;
+            pointer-events: auto;
+            font-family: 'Noto Sans TC', sans-serif;
+        `;
+
+        el.innerHTML = `
+            <div style="display: flex; align-items: flex-start; gap: 10px;">
+                <span style="font-size: 18px;">${color.icon}</span>
+                <div style="flex: 1;">
+                    ${title ? `<div style="font-weight: 600; margin-bottom: 4px; color: #1f2937;">${title}</div>` : ''}
+                    <div style="font-size: 13px; color: #4b5563;">${message}</div>
+                    ${onRetry ? `
+                        <button class="tts-retry-btn" style="
+                            margin-top: 8px;
+                            padding: 6px 12px;
+                            background: ${color.border};
+                            color: white;
+                            border: none;
+                            border-radius: 4px;
+                            cursor: pointer;
+                            font-size: 12px;
+                            font-weight: 500;
+                        ">🔄 重試</button>
+                    ` : ''}
+                </div>
+                <button class="tts-dismiss-btn" style="
+                    background: none;
+                    border: none;
+                    cursor: pointer;
+                    font-size: 16px;
+                    opacity: 0.5;
+                    padding: 0;
+                    line-height: 1;
+                ">✕</button>
+            </div>
+        `;
+
+        // Event listeners
+        const dismissBtn = el.querySelector('.tts-dismiss-btn');
+        if (dismissBtn) {
+            dismissBtn.onclick = () => this._dismiss(el, onDismiss);
+        }
+
+        const retryBtn = el.querySelector('.tts-retry-btn');
+        if (retryBtn && onRetry) {
+            retryBtn.onclick = () => {
+                this._dismiss(el);
+                onRetry();
+            };
+        }
+
+        return el;
+    }
+
+    _dismiss(el, callback) {
+        if (!el || !el.parentNode) return;
+
+        el.style.transform = 'translateX(120%)';
+        el.style.opacity = '0';
+
+        setTimeout(() => {
+            if (el.parentNode) {
+                el.parentNode.removeChild(el);
+            }
+            if (callback) callback();
+        }, 300);
+    }
+
+    /**
+     * Show TTS error with retry option
+     */
+    showTTSError(error, onRetry) {
+        this.show({
+            type: 'error',
+            title: '語音播放失敗',
+            message: error.message || '無法播放語音，請檢查網路連接',
+            onRetry,
+            duration: 0 // Manual dismiss for errors
+        });
+    }
+
+    /**
+     * Show circuit breaker warning
+     */
+    showCircuitOpen(providerName, cooldownMs) {
+        this.show({
+            type: 'warning',
+            title: '語音服務暫時不可用',
+            message: `${providerName} 服務已暫停，${Math.round(cooldownMs / 1000)}秒後自動恢復`,
+            duration: cooldownMs
+        });
+    }
+
+    /**
+     * Show provider switch info
+     */
+    showProviderSwitch(fromProvider, toProvider) {
+        this.show({
+            type: 'info',
+            title: '已切換語音服務',
+            message: `已從 ${fromProvider} 切換到 ${toProvider}`,
+            duration: 3000
+        });
+    }
+
+    /**
+     * Show success message
+     */
+    showSuccess(message) {
+        this.show({
+            type: 'success',
+            title: '成功',
+            message,
+            duration: 2000
+        });
+    }
+}
+
+// ============================================================================
+// 9. INDEXEDDB AUDIO CACHE
+// ============================================================================
+
+class TTSAudioCache {
+    constructor(options = {}) {
+        this.dbName = options.dbName || 'TTSAudioCache';
+        this.storeName = options.storeName || 'audioBlobs';
+        this.maxEntries = options.maxEntries || 200;
+        this.maxSizeMB = options.maxSizeMB || 50;
+        this.ttlMs = options.ttlMs || 24 * 60 * 60 * 1000; // 24 hours
+        this.db = null;
+        this._initPromise = null;
+
+        // Statistics
+        this.stats = {
+            hits: 0,
+            misses: 0,
+            puts: 0,
+            evictions: 0
+        };
+    }
+
+    /**
+     * Initialize IndexedDB
+     */
+    async init() {
+        if (this._initPromise) return this._initPromise;
+
+        this._initPromise = new Promise((resolve, reject) => {
+            if (!window.indexedDB) {
+                console.warn('[TTSCache] IndexedDB not supported, using memory cache');
+                this._useMemoryFallback();
+                resolve(false);
+                return;
+            }
+
+            const request = indexedDB.open(this.dbName, 1);
+
+            request.onerror = (event) => {
+                console.error('[TTSCache] IndexedDB error:', event.target.error);
+                this._useMemoryFallback();
+                resolve(false);
+            };
+
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(this.storeName)) {
+                    const store = db.createObjectStore(this.storeName, { keyPath: 'key' });
+                    store.createIndex('timestamp', 'timestamp', { unique: false });
+                    store.createIndex('size', 'size', { unique: false });
+                }
+            };
+
+            request.onsuccess = (event) => {
+                this.db = event.target.result;
+                console.log('[TTSCache] IndexedDB initialized');
+                this._cleanupExpired(); // Background cleanup
+                resolve(true);
+            };
+        });
+
+        return this._initPromise;
+    }
+
+    _useMemoryFallback() {
+        this._memoryCache = new Map();
+        this.db = null;
+    }
+
+    /**
+     * Generate cache key from TTS parameters
+     */
+    _generateKey(text, voice, rate, pitch) {
+        const content = `${text}|${voice}|${rate}|${pitch}`;
+        // Simple hash function
+        let hash = 0;
+        for (let i = 0; i < content.length; i++) {
+            const char = content.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32bit integer
+        }
+        return `tts_${Math.abs(hash).toString(36)}`;
+    }
+
+    /**
+     * Get cached audio
+     * @returns {Promise<Blob|null>}
+     */
+    async get(text, voice, rate, pitch) {
+        await this.init();
+        const key = this._generateKey(text, voice, rate, pitch);
+
+        // Memory fallback
+        if (this._memoryCache) {
+            const cached = this._memoryCache.get(key);
+            if (cached && Date.now() - cached.timestamp < this.ttlMs) {
+                this.stats.hits++;
+                return cached.blob;
+            }
+            this.stats.misses++;
+            return null;
+        }
+
+        return new Promise((resolve) => {
+            const transaction = this.db.transaction([this.storeName], 'readonly');
+            const store = transaction.objectStore(this.storeName);
+            const request = store.get(key);
+
+            request.onsuccess = () => {
+                const result = request.result;
+                if (result && Date.now() - result.timestamp < this.ttlMs) {
+                    this.stats.hits++;
+                    console.log(`[TTSCache] Hit: ${key.substring(0, 12)}...`);
+                    resolve(result.blob);
+                } else {
+                    this.stats.misses++;
+                    resolve(null);
+                }
+            };
+
+            request.onerror = () => {
+                this.stats.misses++;
+                resolve(null);
+            };
+        });
+    }
+
+    /**
+     * Store audio in cache
+     * @param {Blob} blob - Audio blob
+     */
+    async put(text, voice, rate, pitch, blob) {
+        if (!blob || blob.size === 0) return;
+
+        await this.init();
+        const key = this._generateKey(text, voice, rate, pitch);
+
+        // Memory fallback
+        if (this._memoryCache) {
+            this._memoryCache.set(key, { blob, timestamp: Date.now() });
+            this.stats.puts++;
+            return;
+        }
+
+        const entry = {
+            key,
+            blob,
+            text: text.substring(0, 100), // Store preview for debugging
+            voice,
+            size: blob.size,
+            timestamp: Date.now()
+        };
+
+        return new Promise((resolve) => {
+            const transaction = this.db.transaction([this.storeName], 'readwrite');
+            const store = transaction.objectStore(this.storeName);
+
+            store.put(entry);
+            this.stats.puts++;
+
+            transaction.oncomplete = () => {
+                console.log(`[TTSCache] Put: ${key.substring(0, 12)}... (${(blob.size / 1024).toFixed(1)} KB)`);
+                this._checkSizeLimit();
+                resolve();
+            };
+
+            transaction.onerror = () => resolve();
+        });
+    }
+
+    /**
+     * Clean up expired entries
+     */
+    async _cleanupExpired() {
+        if (!this.db) return;
+
+        const transaction = this.db.transaction([this.storeName], 'readwrite');
+        const store = transaction.objectStore(this.storeName);
+        const index = store.index('timestamp');
+        const cutoff = Date.now() - this.ttlMs;
+
+        const range = IDBKeyRange.upperBound(cutoff);
+        const request = index.openCursor(range);
+
+        request.onsuccess = (event) => {
+            const cursor = event.target.result;
+            if (cursor) {
+                cursor.delete();
+                this.stats.evictions++;
+                cursor.continue();
+            }
+        };
+    }
+
+    /**
+     * Check and enforce size limit
+     */
+    async _checkSizeLimit() {
+        if (!this.db) return;
+
+        const transaction = this.db.transaction([this.storeName], 'readonly');
+        const store = transaction.objectStore(this.storeName);
+        const countRequest = store.count();
+
+        countRequest.onsuccess = () => {
+            if (countRequest.result > this.maxEntries) {
+                this._evictOldest(countRequest.result - this.maxEntries);
+            }
+        };
+    }
+
+    /**
+     * Evict oldest entries
+     */
+    async _evictOldest(count) {
+        if (!this.db || count <= 0) return;
+
+        const transaction = this.db.transaction([this.storeName], 'readwrite');
+        const store = transaction.objectStore(this.storeName);
+        const index = store.index('timestamp');
+        const request = index.openCursor();
+
+        let deleted = 0;
+        request.onsuccess = (event) => {
+            const cursor = event.target.result;
+            if (cursor && deleted < count) {
+                cursor.delete();
+                this.stats.evictions++;
+                deleted++;
+                cursor.continue();
+            }
+        };
+    }
+
+    /**
+     * Get cache statistics
+     */
+    getStats() {
+        const hitRate = this.stats.hits + this.stats.misses > 0
+            ? (this.stats.hits / (this.stats.hits + this.stats.misses) * 100).toFixed(1)
+            : 0;
+
+        return {
+            ...this.stats,
+            hitRate: `${hitRate}%`,
+            usingIndexedDB: !!this.db
+        };
+    }
+
+    /**
+     * Clear all cached audio
+     */
+    async clear() {
+        if (this._memoryCache) {
+            this._memoryCache.clear();
+            return;
+        }
+
+        if (!this.db) return;
+
+        return new Promise((resolve) => {
+            const transaction = this.db.transaction([this.storeName], 'readwrite');
+            const store = transaction.objectStore(this.storeName);
+            store.clear();
+            transaction.oncomplete = () => {
+                console.log('[TTSCache] Cache cleared');
+                this.stats = { hits: 0, misses: 0, puts: 0, evictions: 0 };
+                resolve();
+            };
+        });
+    }
+}
+
+// ============================================================================
+// 10. ALERT MECHANISM
+// ============================================================================
+
+class TTSAlertManager {
+    constructor(options = {}) {
+        this.errorRateThreshold = options.errorRateThreshold || 0.3; // 30% error rate
+        this.windowSizeMs = options.windowSizeMs || 60000; // 1 minute window
+        this.minSamples = options.minSamples || 5; // Minimum samples before alerting
+        this.cooldownMs = options.cooldownMs || 300000; // 5 minute alert cooldown
+
+        this.recentRequests = [];
+        this.lastAlertTime = 0;
+        this.alertCallbacks = [];
+        this.degradedMode = false;
+
+        // Subscribe to TTS events
+        this._setupEventListeners();
+    }
+
+    _setupEventListeners() {
+        EventBus.on(TTSEvents.TTS_PLAY_END, (data) => {
+            this._recordRequest(data.success);
+        });
+
+        EventBus.on(TTSEvents.TTS_PLAY_ERROR, () => {
+            this._recordRequest(false);
+        });
+
+        EventBus.on(TTSEvents.TTS_CIRCUIT_OPEN, (data) => {
+            this._handleCircuitOpen(data);
+        });
+    }
+
+    _recordRequest(success) {
+        const now = Date.now();
+
+        // Add new request
+        this.recentRequests.push({ timestamp: now, success });
+
+        // Remove old requests outside window
+        this.recentRequests = this.recentRequests.filter(
+            r => now - r.timestamp < this.windowSizeMs
+        );
+
+        // Check error rate
+        this._checkErrorRate();
+    }
+
+    _checkErrorRate() {
+        if (this.recentRequests.length < this.minSamples) return;
+
+        const now = Date.now();
+        if (now - this.lastAlertTime < this.cooldownMs) return;
+
+        const failures = this.recentRequests.filter(r => !r.success).length;
+        const errorRate = failures / this.recentRequests.length;
+
+        if (errorRate >= this.errorRateThreshold) {
+            this._triggerAlert({
+                type: 'high_error_rate',
+                errorRate: (errorRate * 100).toFixed(1) + '%',
+                failures,
+                total: this.recentRequests.length,
+                timestamp: now
+            });
+        }
+    }
+
+    _handleCircuitOpen(data) {
+        this._triggerAlert({
+            type: 'circuit_open',
+            provider: data.name,
+            cooldownMs: data.cooldownMs,
+            timestamp: Date.now()
+        });
+
+        // Enter degraded mode
+        this.degradedMode = true;
+        EventBus.emit('tts:degraded:enter', { reason: 'circuit_open', provider: data.name });
+    }
+
+    _triggerAlert(alertData) {
+        this.lastAlertTime = Date.now();
+
+        console.warn('[TTSAlert]', alertData);
+
+        // Notify all registered callbacks
+        this.alertCallbacks.forEach(callback => {
+            try {
+                callback(alertData);
+            } catch (error) {
+                console.error('[TTSAlert] Callback error:', error);
+            }
+        });
+
+        // Emit event
+        EventBus.emit('tts:alert', alertData);
+
+        // Send telemetry to server
+        this._sendTelemetryAlert(alertData);
+    }
+
+    async _sendTelemetryAlert(alertData) {
+        try {
+            // Get API URL from window or default
+            const apiUrl = window.robustTTS?.apiUrl || '';
+            if (!apiUrl) return;
+
+            await fetch(`${apiUrl}/api/telemetry`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type: 'tts_alert',
+                    alert: alertData,
+                    userAgent: navigator.userAgent,
+                    timestamp: Date.now()
+                })
+            });
+        } catch (error) {
+            // Silently fail - don't block on telemetry
+        }
+    }
+
+    /**
+     * Register an alert callback
+     * @param {Function} callback - Function to call on alert
+     * @returns {Function} Unsubscribe function
+     */
+    onAlert(callback) {
+        this.alertCallbacks.push(callback);
+        return () => {
+            const idx = this.alertCallbacks.indexOf(callback);
+            if (idx > -1) this.alertCallbacks.splice(idx, 1);
+        };
+    }
+
+    /**
+     * Get current health status
+     */
+    getStatus() {
+        const failures = this.recentRequests.filter(r => !r.success).length;
+        const errorRate = this.recentRequests.length > 0
+            ? failures / this.recentRequests.length
+            : 0;
+
+        return {
+            errorRate: (errorRate * 100).toFixed(1) + '%',
+            sampleSize: this.recentRequests.length,
+            degradedMode: this.degradedMode,
+            lastAlertTime: this.lastAlertTime ? new Date(this.lastAlertTime).toISOString() : null
+        };
+    }
+
+    /**
+     * Reset alert state
+     */
+    reset() {
+        this.recentRequests = [];
+        this.lastAlertTime = 0;
+        this.degradedMode = false;
+    }
+}
+
+// ============================================================================
+// 11. ENHANCED ROBUST TTS SERVICE (with cache and notifications)
+// ============================================================================
+
+// Extend RobustTTSService to include cache and notifications
+const originalRobustTTSService = RobustTTSService;
+
+RobustTTSService = class extends originalRobustTTSService {
+    constructor(options = {}) {
+        super(options);
+
+        // Initialize new components
+        this.notification = new TTSNotification();
+        this.audioCache = new TTSAudioCache({
+            maxEntries: options.cacheMaxEntries || 200,
+            ttlMs: options.cacheTtlMs || 24 * 60 * 60 * 1000
+        });
+        this.alertManager = new TTSAlertManager({
+            errorRateThreshold: options.alertThreshold || 0.3
+        });
+
+        // Subscribe to events for notifications
+        this._setupNotificationListeners();
+
+        // Initialize cache
+        this.audioCache.init();
+
+        console.log('[RobustTTS] Enhanced service with cache and notifications');
+    }
+
+    _setupNotificationListeners() {
+        // Show notification on circuit open
+        EventBus.on(TTSEvents.TTS_CIRCUIT_OPEN, (data) => {
+            this.notification.showCircuitOpen(data.name, data.cooldownMs);
+        });
+
+        // Show notification on alerts
+        this.alertManager.onAlert((alert) => {
+            if (alert.type === 'high_error_rate') {
+                this.notification.show({
+                    type: 'warning',
+                    title: '語音服務不穩定',
+                    message: `近期錯誤率較高 (${alert.errorRate})，系統正在自動修復`,
+                    duration: 10000
+                });
+            }
+        });
+    }
+
+    /**
+     * Override speak to use cache
+     */
+    speak(text, options = {}) {
+        if (!text || text.trim().length === 0) {
+            return false;
+        }
+
+        const cleanText = this._preprocessText(text);
+        const voice = options.voice || this.defaultVoice;
+        const rate = options.rate || 160;
+        const pitch = options.pitch || 100;
+
+        return this.speechLane.enqueue({
+            text: cleanText,
+            priority: options.priority || 'normal',
+            skipIfBusy: options.skipIfBusy || false,
+            executor: async (signal) => {
+                const startTime = Date.now();
+
+                try {
+                    // 1. Check cache first
+                    const cachedBlob = await this.audioCache.get(cleanText, voice, rate, pitch);
+                    if (cachedBlob) {
+                        console.log('[RobustTTS] Cache hit, playing cached audio');
+                        await this._playAudioBlob(cachedBlob, signal);
+                        this.telemetry.recordLatency(Date.now() - startTime);
+                        return;
+                    }
+
+                    // 2. Synthesize via provider
+                    const result = await this.providerManager.speak(cleanText, {
+                        signal,
+                        voice,
+                        rate,
+                        pitch
+                    });
+
+                    // 3. Play and cache
+                    if (result instanceof Blob) {
+                        // Cache the audio for future use
+                        this.audioCache.put(cleanText, voice, rate, pitch, result);
+                        await this._playAudioBlob(result, signal);
+                    }
+
+                    this.telemetry.recordLatency(Date.now() - startTime);
+
+                } catch (error) {
+                    if (error.name !== 'AbortError') {
+                        console.error('[RobustTTS] Speak failed:', error);
+
+                        // Show notification with retry option
+                        this.notification.showTTSError(error, () => {
+                            this.speak(text, options);
+                        });
+
+                        if (this.onError) {
+                            this.onError(error);
+                        }
+                    }
+                    throw error;
+                }
+            }
+        });
+    }
+
+    /**
+     * Get extended status including cache
+     */
+    getStatus() {
+        return {
+            speechLane: this.speechLane.getStatus(),
+            providers: this.providerManager.getStatus(),
+            telemetry: this.telemetry.getReport(),
+            cache: this.audioCache.getStats(),
+            alerts: this.alertManager.getStatus()
+        };
+    }
+};
+
+// ============================================================================
+// 12. EXPORTS
 // ============================================================================
 
 // Make available globally
@@ -1152,10 +1936,13 @@ window.TTSInfrastructure = {
     SpeechLane,
     TTSProviderManager,
     TTSTelemetry,
-    RobustTTSService
+    RobustTTSService,
+    TTSNotification,
+    TTSAudioCache,
+    TTSAlertManager
 };
 
 // Create global instance (will be configured in app.js)
 window.robustTTS = null;
 
-console.log('[TTS Infrastructure] Module loaded');
+console.log('[TTS Infrastructure] Module loaded (v2 with cache, notifications, alerts)');
