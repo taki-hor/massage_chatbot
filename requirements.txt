@@ -1,0 +1,34 @@
+--no-binary=jieba
+
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-dotenv==1.0.0
+pydantic>=2.7,<3
+aiofiles==23.2.1
+jieba==0.42.1
+
+# Build tools
+wheel>=0.43
+
+# TTS packages
+gtts
+pyttsx3
+edge-tts
+
+# Voice recognition
+speechrecognition
+
+# HTTP and utilities
+httpx
+requests
+certifi
+
+# Additional utilities
+websockets
+numpy
+pydub
+
+# Azure services
+azure-cognitiveservices-speech
+
+# logging is part of the standard library, no pip package needed

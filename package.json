@@ -1,0 +1,23 @@
+{
+  "name": "ai-nurse-chatbot",
+  "version": "1.0.0",
+  "description": "智能護理助手 - Intelligent Nursing Assistant Chatbot",
+  "scripts": {
+    "build:css": "tailwindcss -i ./static/styles_tailwind.css -o ./static/styles_compiled.css --minify",
+    "watch:css": "tailwindcss -i ./static/styles_tailwind.css -o ./static/styles_compiled.css --watch",
+    "dev": "npm run watch:css"
+  },
+  "keywords": [
+    "chatbot",
+    "nursing",
+    "ai",
+    "healthcare"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "tailwindcss": "^3.4.0",
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.32"
+  }
+}

@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能護理助手 - 專業護理版</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles_compiled.css">  
+	<!-- <link rel="stylesheet" href="/static/styles.css"> -->
+
+</head>
+<body>
+    <!-- 載入動畫 -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-content">
+            <img src="/static/nurse_chatbot_logo.png" class="loading-logo" alt="智能護理系統啟動中...">
+            <div class="loading-text">智能護理系統啟動中...</div>
+        </div>
+    </div>
+
+    <!-- 森林背景 -->
+    <div class="forest-bg" id="forestBg">
+        <div class="bg-layer canopy"></div>
+        <div class="bg-layer midground"></div>
+        <div class="bg-layer forest-floor"></div>
+    </div>
+
+    <!-- 飄落的樹葉 -->
+    <div class="leaf"></div>
+    <div class="leaf"></div>
+    <div class="leaf"></div>
+    <div class="leaf"></div>
+    <div class="leaf"></div>
+
+    <!-- 主容器 -->
+    <div class="main-container">
+        <!-- 迷你天氣角標 -->
+        <div class="mini-weather" id="miniWeather">
+            <span class="weather-icon" id="weatherIcon">🔄</span>
+            <span class="weather-temp" id="weatherTemp">--°</span>
+            <span class="weather-desc" id="weatherDesc">載入中...</span>
+        </div>
+
+        <!-- 頂欄 -->
+        <header class="top-bar">
+            <div class="app-title">
+                <img src="/static/nurse_chatbot_logo.png" class="nurse-logo" alt="護士圖標">
+                智能按摩護理助手
+                <span class="performance-badge">專業護理版</span>
+            </div>
+            <button class="settings-btn" id="settingsBtn" title="設定">
+                <svg viewBox="0 0 24 24">
+                    <path d="M12 15.5A3.5 3.5 0 0 1 8.5 12A3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5a3.5 3.5 0 0 1-3.5 3.5m7.43-2.53c.04-.32.07-.64.07-.97c0-.33-.03-.66-.07-1l2.11-1.63c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.31-.61-.22l-2.49 1c-.52-.39-1.06-.73-1.69-.98l-.37-2.65A.506.506 0 0 0 14 2h-4c-.25 0-.46.18-.5.42l-.37 2.65c-.63.25-1.17.59-1.69.98l-2.49-1c-.22-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64L4.57 11c-.04.34-.07.67-.07 1c0 .33.03.65.07.97l-2.11 1.66c-.19.15-.25.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1.01c.52.4 1.06.74 1.69.99l.37 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.37-2.65c.63-.26 1.17-.59 1.69-.99l2.49 1.01c.22.08.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.66Z"/>
+                </svg>
+            </button>
+        </header>
+
+        <!-- 中段：聊天區 + 工具側欄 -->
+        <div class="chat-and-tools">
+            <!-- 聊天主區 -->
+            <section class="chat-main">
+                <div class="messages-area" id="responseBox">
+                    <span style="color: var(--text-secondary);">
+                        您好!我是您的智能按摩護理助手。請告訴我您需要什麼幫助。
+                        支持語音指令控制,讓我為您提供專業的按摩護理服務!
+                    </span>
+                    
+                    <!-- 朗讀指示器 -->
+                    <div class="speaking-indicator" id="speakingIndicator">
+                        <span class="animal-dot">🦊</span>
+                        <span class="animal-dot">🐿️</span>
+                        <span class="animal-dot">🐰</span>
+                        <span>正在朗讀</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 工具側欄 -->
+            <aside class="tools-sidebar">
+                <!-- 快速參數 (預設收合) -->
+                <details class="quick-params-collapsible">
+                    <summary class="params-header">
+                        <span>🎛️</span>
+                        <span>快速參數</span>
+                    </summary>
+                    
+                    <div class="params-grid">
+                        <div class="control-group">
+                            <label class="control-label">
+                                <span>🎯</span> 部位
+                            </label>
+                            <select id="bodyPartSelect" class="control-select">
+                                <option value="">自動偵測</option>
+                                <option value="肩膀">肩膀</option>
+                                <option value="背部">背部</option>
+                                <option value="腰部">腰部</option>
+                                <option value="腿部">腿部</option>
+                                <option value="頸部">頸部</option>
+                                <option value="手臂">手臂</option>
+                            </select>
+                        </div>
+                        
+                        <div class="control-group">
+                            <label class="control-label">
+                                <span>💆</span> 動作
+                            </label>
+                            <select id="actionSelect" class="control-select">
+                                <option value="">自動偵測</option>
+                                <option value="揉捏">揉捏</option>
+                                <option value="敲打">敲打</option>
+                                <option value="推拿">推拿</option>
+                                <option value="指壓">指壓</option>
+                                <option value="推油">推油</option>
+                            </select>
+                        </div>
+                        
+                        <div class="control-group">
+                            <label class="control-label">
+                                <span>💪</span> 力度
+                            </label>
+                            <select id="intensitySelect" class="control-select">
+                                <option value="">自動偵測</option>
+                                <option value="輕柔">輕柔</option>
+                                <option value="適中">適中</option>
+                                <option value="強力">強力</option>
+                            </select>
+                        </div>
+                        
+                        <div class="control-group">
+                            <label class="control-label">
+                                <span>⏱️</span> 時長
+                            </label>
+                            <select id="durationSelect" class="control-select">
+                                <option value="">自動偵測</option>
+                                <option value="1">1 分鐘</option>
+                                <option value="3">3 分鐘</option>
+                                <option value="5">5 分鐘</option>
+                                <option value="8">8 分鐘</option>
+                                <option value="10">10 分鐘</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="quick-action-btns">
+                        <button class="quick-btn" id="quickPresetBtn">
+                            <span>⚡</span> 快速方案
+                        </button>
+                        <button class="quick-btn execute-btn" id="executeManualBtn">
+                            <span>▶️</span> 執行
+                        </button>
+                    </div>
+                </details>
+
+                <!-- 連線狀態卡 -->
+                <div class="mini-card status-card">
+                    <div class="card-header">
+                        <span>🟢</span> 連線狀態
+                    </div>
+                    <div class="card-content">
+                        <div class="status-dot" id="statusDot"></div>
+                        <span id="statusText">準備就緒</span>
+                    </div>
+                </div>
+
+                <!-- TTS 狀態卡 -->
+                <div class="mini-card tts-status-card">
+                    <div class="card-header">
+                        <span id="ttsStatusIcon">🔊</span> TTS 語音
+                    </div>
+                    <div class="card-content">
+                        <div class="tts-status-row">
+                            <span class="tts-provider-dot" id="edgeTtsDot"></span>
+                            <span>Edge TTS:</span>
+                            <span id="edgeTtsStatus">檢查中...</span>
+                        </div>
+                        <div class="tts-status-row">
+                            <span class="tts-provider-dot" id="azureTtsDot"></span>
+                            <span>Azure TTS:</span>
+                            <span id="azureTtsStatus">檢查中...</span>
+                        </div>
+                        <div class="tts-error-msg" id="ttsErrorMsg" style="display: none;"></div>
+                    </div>
+                </div>
+
+                <!-- 使用統計卡 -->
+                <div class="mini-card stats-card">
+                    <div class="card-header">
+                        <span>📊</span> 今日使用
+                    </div>
+                    <div class="card-content">
+                        <div class="stat-row"><span>次數:</span><span id="statTodayCount">0</span> / <span id="statRemaining">6</span></div>
+                        <div class="stat-row"><span>最常用:</span><span id="statFavoritePart">無記錄</span></div>
+                        <div class="stat-row"><span>連續操作:</span><span id="statConsecutive">0</span> / 3</div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- 底部固定輸入列 -->
+        <div class="bottom-composer">
+            <textarea 
+                id="userInput" 
+                placeholder="💬 請輸入您的按摩需求，或按 🎤 開始說話..."
+                rows="1"
+            ></textarea>
+            
+            <div class="voice-button-container">
+                <button id="voiceButton" class="voice-button" title="按住說話">
+                    <span class="mic-icon">🎤</span>
+                </button>
+                <span class="voice-hint">按住說話</span>
+            </div>
+            
+            <button id="sendButton" class="icon-button send-btn" title="發送訊息">
+                <span>📤</span>
+            </button>
+            
+            <div class="checkbox-wrapper">
+                <input type="checkbox" id="autoSpeak" checked>
+                <label for="autoSpeak" class="checkbox-label">自動朗讀</label>
+            </div>
+
+            <!-- 移動端參數按鈕 -->
+            <button id="mobileParamsBtn" class="mobile-params-trigger">
+                🎛️
+            </button>
+        </div>
+    </div>
+
+    <!-- 移動端參數抽屜 -->
+    <div class="params-drawer" id="paramsDrawer">
+        <div class="drawer-header">
+            <h3>🎛️ 快速參數</h3>
+            <button class="close-drawer" id="closeDrawer">✕</button>
+        </div>
+        <div class="drawer-content">
+            <!-- 與側欄相同的參數內容 -->
+            <div class="params-grid">
+                <div class="control-group">
+                    <label class="control-label"><span>🎯</span> 部位</label>
+                    <select class="control-select" data-sync="bodyPartSelect">
+                        <option value="">自動偵測</option>
+                        <option value="肩膀">肩膀</option>
+                        <option value="背部">背部</option>
+                        <option value="腰部">腰部</option>
+                        <option value="腿部">腿部</option>
+                        <option value="頸部">頸部</option>
+                        <option value="手臂">手臂</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label class="control-label"><span>💆</span> 動作</label>
+                    <select class="control-select" data-sync="actionSelect">
+                        <option value="">自動偵測</option>
+                        <option value="揉捏">揉捏</option>
+                        <option value="敲打">敲打</option>
+                        <option value="推拿">推拿</option>
+                        <option value="指壓">指壓</option>
+                        <option value="推油">推油</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label class="control-label"><span>💪</span> 力度</label>
+                    <select class="control-select" data-sync="intensitySelect">
+                        <option value="">自動偵測</option>
+                        <option value="輕柔">輕柔</option>
+                        <option value="適中">適中</option>
+                        <option value="強力">強力</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label class="control-label"><span>⏱️</span> 時長</label>
+                    <select class="control-select" data-sync="durationSelect">
+                        <option value="">自動偵測</option>
+                        <option value="1">1 分鐘</option>
+                        <option value="3">3 分鐘</option>
+                        <option value="5">5 分鐘</option>
+                        <option value="8">8 分鐘</option>
+                        <option value="10">10 分鐘</option>
+                    </select>
+                </div>
+            </div>
+            <div class="quick-action-btns">
+                <button class="quick-btn" id="drawerQuickPresetBtn">⚡ 快速方案</button>
+                <button class="quick-btn execute-btn" id="drawerExecuteBtn">▶️ 執行</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 抽屜遮罩 -->
+    <div class="drawer-overlay" id="drawerOverlay"></div>
+
+    <!-- 設定面板 (保持原有) -->
+    <div class="settings-panel" id="settingsPanel">
+        <div class="settings-header">
+            <div class="settings-title">系統設定</div>
+            <button class="close-settings" id="closeSettings">
+                <svg viewBox="0 0 24 24">
+                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/>
+                </svg>
+            </button>
+        </div>
+        <div class="settings-content">
+            <div class="setting-group">
+                <label class="setting-label" for="modelSelect"><span>🧠</span> AI 智慧模式</label>
+                <select id="modelSelect">
+                    <optgroup label="🟢 Google Gemini">
+                        <option value="gemini-2.5-flash">⚡ Gemini 2.5 Flash (推薦)</option>
+                        <option value="gemini-2.0-flash">🌟 Gemini 2.0 Flash</option>
+                    </optgroup>
+                    <optgroup label="🧠 DeepSeek">
+                        <option value="deepseek-chat">🧠 DeepSeek Chat 智慧狐狸</option>
+                    </optgroup>
+                    <optgroup label="🌍 Together AI">
+                        <option value="together-llama-70b">🦙 Llama 3.1 70B 羊駝狐狸</option>
+                        <option value="together-mixtral" selected>🎯 Mixtral 8x7B 混合狐狸</option>
+                        <option value="together-qwen">💫 Qwen 72B (Together)</option>
+                    </optgroup>
+                    <optgroup label="🇨🇳 通義千問">
+                        <option value="qwen-turbo">⚡ Qwen Turbo 飛速狐狸</option>
+                        <option value="qwen-plus">💪 Qwen Plus 超級狐狸</option>
+                    </optgroup>
+                </select>
+                <p class="setting-info">揀選智能護理助手嘅智慧程度!</p>
+                <div class="model-status">
+                    <div id="currentModelInfo"></div>
+                </div>
+                <div class="api-status">
+                    <div class="api-status-title">API 配置狀態:</div>
+                    <div id="apiStatusList" class="api-status-grid"></div>
+                </div>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label"><span>📚</span> 知識庫管理</label>
+                <button id="manageKnowledgeBtn" class="primary-btn">管理問答對</button>
+                <p class="setting-info">設定常見問題的預設答案</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="voiceSelect"><span>🎤</span> 語音選擇</label>
+                <select id="voiceSelect">
+                    <option value="zh-HK-HiuGaaiNeural" selected>🎀 甜美女聲(曉佳姐姐) - 標準語速</option>
+                    <option value="zh-HK-HiuMaanNeural">🌸 溫柔女聲(曉曼姐姐) - 已調速</option>
+                    <option value="zh-HK-WanLungNeural">🎯 陽光男聲(雲龍哥哥) - 已調速</option>
+                </select>
+                <p class="setting-info">揀選你鍾意嘅朗讀聲音，已自動調整為一致語速</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="responseLengthSelect"><span>📝</span> 回答長度</label>
+                <select id="responseLengthSelect">
+                    <option value="brief" selected>🌱 簡短明瞭</option>
+                    <option value="normal">🌿 適中詳細</option>
+                    <option value="detailed">🌳 完整詳盡</option>
+                </select>
+                <p class="setting-info">控制智能護理助手回答嘅詳細程度</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="asrEngineSelect"><span>🗣️</span> 語音識別引擎</label>
+                <select id="asrEngineSelect">
+                    <option value="browser" selected>🌐 瀏覽器識別(免費)</option>
+                    <option value="xunfei" disabled>🎯 訊飛識別(準確 - 未配置)</option>
+                </select>
+                <p class="setting-info" id="asrInfo">使用瀏覽器內建語音識別，完全免費㗎！</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label"><span>⏱️</span> 語句結束檢測</label>
+                <label for="confidenceTimeoutSlider" class="setting-sub-label">高信心延遲 (ms)</label>
+                <input type="range" id="confidenceTimeoutSlider" min="500" max="2000" step="100" value="800">
+                <span id="confidenceTimeoutValue" class="setting-meter">800 ms</span>
+                <p class="setting-info">當識別到高信心句子後，等待多久自動結束。</p>
+                <label for="silenceThresholdSlider" class="setting-sub-label">靜音超時 (ms)</label>
+                <input type="range" id="silenceThresholdSlider" min="1000" max="3000" step="100" value="1500">
+                <span id="silenceThresholdValue" class="setting-meter">1500 ms</span>
+                <p class="setting-info">偵測到靜音後，等待多久自動結束。</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label"><span>🎙️</span> 麥克風靈敏度</label>
+                <button id="calibrateMicBtn" class="primary-btn">校準麥克風</button>
+                <p class="setting-info" id="micCalibrationInfo">點擊按鈕並在安靜環境中等待5秒，以自動調整音量檢測閾值。</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="robotWSUrl"><span>🤖</span> 機械臂連接</label>
+                <input type="text" id="robotWSUrl" placeholder="ws://localhost:8765">
+                <p class="setting-info">設定機械臂 WebSocket 連線位址，無需連接可保留預設值。</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="wakeWordToggle"><span>🦊</span> 喚醒詞</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="wakeWordToggle" checked>
+                    <label for="wakeWordToggle" class="checkbox-label">啟用喚醒詞「護理員」</label>
+                </div>
+                <button id="restartWakeWordBtn" class="secondary-btn" disabled>🔄 重啟喚醒詞檢測</button>
+                <p class="setting-info">啟用後，講「護理員」就可以開始錄音。如果喚醒失靈，點擊重啟按鈕。</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label"><span>🛡️</span> TTS 後備</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="disableBrowserTTS" checked>
+                    <label for="disableBrowserTTS" class="checkbox-label">停用瀏覽器 TTS 後備 (只用伺服器語音)</label>
+                </div>
+                <p class="setting-info">當伺服器 TTS 503 或失敗時，如啟用此選項將不會使用瀏覽器語音，避免重疊。</p>
+            </div>
+
+            <div class="setting-group">
+                <button id="testSystemBtn" class="primary-btn">🎪 測試系統</button>
+                <button onclick="toggleDebugMode()" class="secondary-btn">🔧 切換調試模式</button>
+                <p class="setting-info">開啟調試模式可查看性能指標同播放統計</p>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label"><span>📊</span> 使用統計</label>
+                <div class="stats-card-panel" id="massageStats">
+                    <div class="stats-grid">
+                        <div class="stats-block">
+                            <div class="stats-value" id="statTodayCountPanel">0</div>
+                            <div class="stats-label">今日次數</div>
+                        </div>
+                        <div class="stats-block">
+                            <div class="stats-value" id="statRemainingPanel">6</div>
+                            <div class="stats-label">剩餘次數</div>
+                        </div>
+                    </div>
+                    <div class="stats-extra">
+                        <div>最常按摩部位: <span id="statFavoritePartPanel">無記錄</span></div>
+                        <div>連續操作: <span id="statConsecutivePanel">0</span> / 3</div>
+                    </div>
+                </div>
+                <button id="refreshStatsBtn" class="secondary-btn">🔄 刷新統計</button>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label"><span>🔧</span> 開發者選項</label>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="debugMode">
+                    <label for="debugMode" class="checkbox-label">顯示詳細日誌</label>
+                </div>
+                <button id="runTestsBtn" class="secondary-btn warning">🧪 運行測試</button>
+                <button id="clearHistoryBtn" class="secondary-btn danger">🗑️ 清除使用記錄</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 遮罩層 -->
+    <div class="overlay" id="overlay"></div>
+
+    <!-- 知識庫管理面板 -->
+    <div class="knowledge-panel" id="knowledgePanel">
+        <div class="knowledge-header">
+            <div class="knowledge-title"><span>📚</span> 知識庫管理</div>
+            <button class="close-knowledge" id="closeKnowledge">
+                <svg viewBox="0 0 24 24">
+                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/>
+                </svg>
+            </button>
+        </div>
+        <div class="knowledge-content">
+            <div class="kb-stats" id="kbStats">
+                <div class="kb-stat">
+                    <div class="kb-stat-value" id="kbTotal">0</div>
+                    <div class="kb-stat-label">總問答對</div>
+                </div>
+                <div class="kb-stat">
+                    <div class="kb-stat-value" id="kbEnabled">0</div>
+                    <div class="kb-stat-label">已啟用</div>
+                </div>
+                <div class="kb-stat">
+                    <div class="kb-stat-value" id="kbHitRate">0%</div>
+                    <div class="kb-stat-label">緩存命中率</div>
+                </div>
+            </div>
+            <div class="kb-section">
+                <h3>添加新問答對</h3>
+                <div class="kb-form">
+                    <div class="form-group">
+                        <label>分類:</label>
+                        <input type="text" id="kbCategory" placeholder="例如:學校資訊" list="categoryList">
+                        <datalist id="categoryList"></datalist>
+                    </div>
+                    <div class="form-group">
+                        <label>問題(可添加多個相似問法):</label>
+                        <div id="questionsList">
+                            <input type="text" class="kb-question" placeholder="輸入問題">
+                        </div>
+                        <button class="add-question-btn" onclick="addQuestionInput()">+ 添加更多問法</button>
+                    </div>
+                    <div class="form-group">
+                        <label>答案:</label>
+                        <textarea id="kbAnswer" placeholder="輸入答案" rows="3"></textarea>
+                    </div>
+                    <button class="kb-save-btn" onclick="saveQAPair()">保存問答對</button>
+                </div>
+            </div>
+            <div class="kb-section">
+                <h3>現有問答對</h3>
+                <div id="qaList" class="qa-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 護理助手 -->
+    <div class="fox-assistant" id="nurseAssistant">
+        <div class="fox-body">
+            <div class="nurse-icon-wrapper">
+                <img src="/static/nurse_chatbot_logo.png" alt="智能護理助手" class="nurse-icon-img">
+            </div>
+        </div>
+    </div>
+
+    <!-- 持續監聽指示器 -->
+    <div id="autoListeningIndicator" class="auto-listening-indicator">
+        <div class="listening-animation">
+            <div class="listening-dot"></div>
+            <div class="listening-dot"></div>
+            <div class="listening-dot"></div>
+        </div>
+        <span>🎤 持續監聽中</span>
+    </div>
+
+    <!-- TTS Infrastructure - Must load before app.js -->
+    <script src="/static/tts-infrastructure.js?v=2"></script>
+    <script src="/static/app.js?v=4"></script>
+
+    <!-- Test files (uncomment to enable in-browser testing) -->
+    <!-- Run TTSTests.runAll() or TTSE2ETests.runAll() in console -->
+    <!-- <script src="/static/tts-infrastructure.test.js"></script> -->
+    <!-- <script src="/static/tts-e2e.test.js"></script> -->
+</body>
+</html>

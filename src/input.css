@@ -1,0 +1,4 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+/* 之後你可以在這裡用 @layer 加自訂元件樣式 */
