@@ -391,13 +391,19 @@
             </div>
 
             <div class="setting-group">
-                <label class="setting-label" for="wakeWordToggle"><span>🦊</span> 喚醒詞</label>
+                <label class="setting-label"><span>🎤</span> 語音喚醒</label>
                 <div class="checkbox-wrapper">
                     <input type="checkbox" id="wakeWordToggle" checked>
                     <label for="wakeWordToggle" class="checkbox-label">啟用喚醒詞「護理員」</label>
                 </div>
-                <button id="restartWakeWordBtn" class="secondary-btn" disabled>🔄 重啟喚醒詞檢測</button>
-                <p class="setting-info">啟用後，講「護理員」就可以開始錄音。如果喚醒失靈，點擊重啟按鈕。</p>
+                <p class="setting-info listening-mode-info">
+                    <span id="listeningModeDesc">✅ 講「護理員」開始對話</span>
+                </p>
+                <button id="restartWakeWordBtn" class="secondary-btn" disabled>🔄 重啟語音檢測</button>
+                <p class="setting-info">
+                    <strong>使用方式：</strong>講「護理員」開始對話<br>
+                    <strong>跟進對話：</strong>AI回答後6秒內可繼續追問（類似Siri）
+                </p>
             </div>
 
             <div class="setting-group">
@@ -514,14 +520,17 @@
         </div>
     </div>
 
-    <!-- 持續監聽指示器 -->
+    <!-- 持續監聽指示器 (Always-Listening / Massage Mode) -->
     <div id="autoListeningIndicator" class="auto-listening-indicator">
         <div class="listening-animation">
-            <div class="listening-dot"></div>
-            <div class="listening-dot"></div>
-            <div class="listening-dot"></div>
+            <span class="listening-dot"></span>
+            <span class="listening-dot"></span>
+            <span class="listening-dot"></span>
         </div>
-        <span>🎤 持續監聽中</span>
+        <div class="listening-status">
+            <span class="listening-text">持續聆聽</span>
+            <span class="listening-subtext">準備好了</span>
+        </div>
     </div>
 
     <!-- TTS Infrastructure - Must load before app.js -->

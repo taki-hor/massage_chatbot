@@ -112,6 +112,24 @@
         let massageListeningHealthCheck = null; // Health check interval for massage listening
         let lastRecognitionActivity = Date.now(); // Track last recognition activity
 
+        // ===== Follow-Up Conversation Mode (跟進對話模式) =====
+        // Similar to Siri: after AI responds, keep listening for 5-8 seconds for follow-up
+        let followUpTimer = null; // Timer for follow-up timeout
+        let followUpTimeRemaining = 0; // Track remaining time for UI
+        let followUpCountdownInterval = null; // Interval for updating countdown
+        let pendingFollowUp = false; // Flag: should follow-up start after TTS ends?
+        const FOLLOW_UP_DURATION = 6000; // 6 seconds follow-up window (like Siri)
+        const FOLLOW_UP_EXTENSION = 3000; // Extend by 3 seconds when user starts speaking
+
+        // ===== Always-Listening Mode (保留向後兼容) =====
+        let isAlwaysListeningMode = false; // User setting: always-listening enabled
+        let isAlwaysListeningActive = false; // Runtime state: currently listening
+        let alwaysListeningHealthCheck = null; // Health check interval
+        let alwaysListeningState = 'idle'; // 'idle', 'ready', 'listening', 'processing', 'not-ready', 'error'
+        let alwaysListeningPermissionDenied = false; // Track if mic permission was denied
+        let alwaysListeningRetryCount = 0; // Track retry attempts
+        const ALWAYS_LISTENING_MAX_RETRIES = 3; // Max retries before requiring user gesture
+
         // ===== 按摩對話系統 =====
         const massageDialogues = {
             start: [
@@ -412,7 +430,7 @@
 
         // ===== 極速流式TTS播放器 (修正版) =====
         class UltraFastTTSPlayer {
-            constructor() {
+            constructor(options = {}) {
                 this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 this.audioBuffers = [];
                 this.isPlaying = false;
@@ -431,6 +449,10 @@
                 this.maxCharsPerChunk = 50; // 一次最多50字
                 this.flushTimeout = null;
                 this.lastTextTime = Date.now();
+
+                // 🎤 Callbacks for follow-up mode
+                this.onComplete = options.onComplete || null;
+                this.onStart = options.onStart || null;
 
                 // 🔧 FIX: Resume AudioContext on first user interaction to comply with autoplay policy
                 this._setupAutoplayPolicyFix();
@@ -720,6 +742,15 @@
 
                 this._hideIndicator();
                 setFoxState(null);
+
+                // 🎤 Call onComplete callback when playback finishes naturally (not forced)
+                if (!forceStop && this.onComplete) {
+                    console.log('[UltraFastTTS] Playback complete, triggering callback');
+                    // Small delay to ensure audio has finished
+                    setTimeout(() => {
+                        if (this.onComplete) this.onComplete();
+                    }, 100);
+                }
             }
 
             flush() {
@@ -1483,6 +1514,7 @@
             // CORRECT: Declare transcript variables here, outside onresult
             let finalTranscript = '';
             let confidenceTimeout = null;
+            let fallbackSubmitTimeout = null; // Fallback submit when confidence is low
             let lastProcessedCommand = ''; // Track last command to prevent duplicates
             let lastProcessedTime = 0;
 
@@ -1499,32 +1531,50 @@
             browserRecognition.onend = () => {
                 console.log('🛑 Browser recognition ended');
 
-                // ✨ NEW: Handle end of Follow-up Mode
-                if (isFollowUpListening) {
-                    isFollowUpListening = false; // Always reset the flag
-                    hideListeningIndicator();
-                    // If it ends, it means the user didn't say anything.
-                    // Now, we can start the wake word detector.
-                    const wakeWordToggle = document.getElementById('wakeWordToggle');
-                    if (wakeWordDetector && wakeWordToggle?.checked && !isMassageSessionActive) {
-                         console.log("🎤 Follow-up period ended. Resuming wake word detector.");
-                         wakeWordDetector.start();
+                // ✨ Handle end of Follow-up Mode
+                if (isFollowUpListening && followUpTimeRemaining > 0) {
+                    // Recognition ended but timer not expired - try to restart
+                    console.log("[FollowUp] Recognition ended but timer not expired, restarting...");
+                    try {
+                        setTimeout(() => {
+                            if (isFollowUpListening && followUpTimeRemaining > 0) {
+                                browserRecognition.start();
+                                console.log("[FollowUp] Recognition restarted");
+                            }
+                        }, 100);
+                    } catch (e) {
+                        console.log("[FollowUp] Could not restart recognition:", e.message);
+                        stopFollowUpListening(true);
                     }
+                    return; // End here, don't process other onend logic
+                } else if (isFollowUpListening && followUpTimeRemaining <= 0) {
+                    // Timer expired - stop follow-up mode
+                    console.log("🎤 Follow-up timer expired. Returning to wake word mode.");
+                    stopFollowUpListening(true);
                     return; // End here, don't process other onend logic
                 }
 
                 if (isIntentionalStop) {
                     isIntentionalStop = false; // Reset flag
+                    const wasAuto = isAutoListening;
+                    const wasAlways = isAlwaysListeningActive;
                     // 🔧 FIX: Now we can safely set isAutoListening to false
                     // because recognition has actually stopped
                     if (isAutoListening) {
                         isAutoListening = false;
                         console.log("🎤 Recognition stopped intentionally for TTS. Flag reset. Will be resumed by TTS handler.");
                     }
-                    return; // Do not proceed with any restart logic here
+                    if (isAlwaysListeningActive) {
+                        isAlwaysListeningActive = false;
+                        console.log("🎤 Always-listening stopped intentionally for TTS. Will be resumed by TTS handler.");
+                    }
+                    // Only short-circuit for modes that will self-restart; for manual recordings fall through to submit
+                    if (wasAuto || wasAlways) {
+                        return; // Do not proceed with any restart logic here
+                    }
                 }
-                
-                if (!isAutoListening) {
+
+                if (!isAutoListening && !isAlwaysListeningActive) {
                     // Normal recording ended
                     isRecording = false;
                     if (audioLevelDetector) {
@@ -1535,7 +1585,7 @@
                     if (voiceButton) voiceButton.classList.remove('recording');
                     updateVoiceHint('按住說話');
                     setFoxState(null);
-                    
+
                     const userInput = document.getElementById('userInput');
                     if (userInput && userInput.value.trim()) {
                         sendMessage();
@@ -1547,18 +1597,34 @@
                     isAutoListening = false;
                     // Use safe restart to prevent race conditions
                     safeRestartMassageListening();
+                } else if (isAlwaysListeningMode && isAlwaysListeningActive) {
+                    // 🎤 Always-listening mode: auto-restart when recognition ends unexpectedly
+                    console.log("🔄 [AlwaysListen] Recognition ended unexpectedly, restarting...");
+                    isAlwaysListeningActive = false;
+                    // Restart after short delay to avoid rapid restart loops (only if permission not denied)
+                    setTimeout(() => {
+                        if (isAlwaysListeningMode && !isTTSPlaying && !isMassageSessionActive && !alwaysListeningPermissionDenied) {
+                            startAlwaysListening();
+                        }
+                    }, 300);
                 }
-                
+
                 // Reset for the next recognition
                 finalTranscript = '';
 
-                // Ensure wake word restarts if enabled and we are not in another recording session
+                // Ensure wake word or always-listening restarts if enabled
                 setTimeout(() => {
                     const wakeWordToggle = document.getElementById('wakeWordToggle');
-                    if (wakeWordDetector && wakeWordToggle?.checked && !isAutoListening && !isRecording && !isMassageSessionActive) {
-                        console.log("🔄 Restarting wake word detection after recognition ended...");
-                        if (!wakeWordDetector.isListening) {
-                           wakeWordDetector.start();
+                    if (!isAutoListening && !isRecording && !isMassageSessionActive && !isAlwaysListeningActive) {
+                        if (isAlwaysListeningMode && !isTTSPlaying && !alwaysListeningPermissionDenied) {
+                            // Always-listening mode is enabled but not active - restart it
+                            console.log("🔄 [AlwaysListen] Restarting after recognition ended...");
+                            startAlwaysListening();
+                        } else if (wakeWordDetector && wakeWordToggle?.checked) {
+                            console.log("🔄 Restarting wake word detection after recognition ended...");
+                            if (!wakeWordDetector.isListening) {
+                               wakeWordDetector.start();
+                            }
                         }
                     }
                 }, 800); // Delay to prevent immediate restart conflicts
@@ -1594,9 +1660,40 @@
                     return; // Exit early, don't reset flags or clean up UI
                 }
 
-                // For non-massage errors or serious errors, do normal cleanup
+                // 🎤 Always-listening mode: handle harmless errors gracefully
+                if (isAlwaysListeningMode && (event.error === 'no-speech' || event.error === 'aborted')) {
+                    console.log('[AlwaysListen] Harmless error, letting onend handler manage restart');
+                    return; // Exit early, let onend handler restart
+                }
+
+                // 🔧 FIX: Handle not-allowed (permission denied) error specifically
+                if (isAlwaysListeningMode && event.error === 'not-allowed') {
+                    console.error('[AlwaysListen] Microphone permission denied');
+                    alwaysListeningPermissionDenied = true;
+                    isAlwaysListeningActive = false;
+                    stopAlwaysListeningHealthCheck();
+                    updateAlwaysListeningIndicator('error', '需要麥克風權限', '請點擊「重啟語音檢測」');
+                    return; // Don't retry - requires user gesture
+                }
+
+                // For serious errors or non-listening modes, do normal cleanup
                 isRecording = false;
                 isAutoListening = false;
+                if (isAlwaysListeningActive) {
+                    isAlwaysListeningActive = false;
+                    alwaysListeningRetryCount++;
+
+                    // Try to restart always-listening after a delay (with retry limit)
+                    if (isAlwaysListeningMode && !isTTSPlaying && !isMassageSessionActive &&
+                        !alwaysListeningPermissionDenied && alwaysListeningRetryCount < ALWAYS_LISTENING_MAX_RETRIES) {
+                        console.log(`[AlwaysListen] Error occurred, restarting after delay... (attempt ${alwaysListeningRetryCount}/${ALWAYS_LISTENING_MAX_RETRIES})`);
+                        updateAlwaysListeningIndicator('error', '發生錯誤', '重新啟動中...');
+                        setTimeout(() => startAlwaysListening(), 2000);
+                    } else if (alwaysListeningRetryCount >= ALWAYS_LISTENING_MAX_RETRIES) {
+                        console.error('[AlwaysListen] Max retries reached, stopping auto-restart');
+                        updateAlwaysListeningIndicator('error', '無法啟動', '請點擊「重啟語音檢測」');
+                    }
+                }
                 if (audioLevelDetector) {
                     audioLevelDetector.stop();
                     audioLevelDetector = null;
@@ -1605,23 +1702,60 @@
                 if (voiceButton) voiceButton.classList.remove('recording', 'auto-listening');
                 updateVoiceHint('按住說話');
                 setFoxState(null);
-                hideListeningIndicator();
+                if (!isAlwaysListeningMode) {
+                    hideListeningIndicator();
+                }
             };
 
             browserRecognition.onresult = (event) => {
                 // 🔧 FIX: Track recognition activity for health check
                 lastRecognitionActivity = Date.now();
 
-                // ✨ NEW: If speech is detected during follow-up, process it and exit follow-up mode.
+                // ✨ Follow-up mode: extend timer on interim, process on final
                 if (isFollowUpListening) {
-                    console.log("🎤 Speech detected during follow-up mode.");
-                    isFollowUpListening = false; // Exit follow-up mode
-                    hideListeningIndicator();
-                    // The rest of the onresult logic will handle the transcript as a normal command.
+                    const latestResult = event.results[event.results.length - 1];
+                    const transcript = latestResult[0].transcript.trim();
+
+                    if (!latestResult.isFinal) {
+                        // Interim result - user is speaking, extend timer
+                        extendFollowUpTimer();
+                        // Update indicator to show what we're hearing
+                        const indicator = document.getElementById('autoListeningIndicator');
+                        if (indicator) {
+                            indicator.querySelector('.listening-text').textContent =
+                                `聽到: ${transcript.substring(0, 20)}...`;
+                        }
+                    } else if (transcript.length >= 2) {
+                        // Final result with actual content - stop follow-up and submit to chat
+                        console.log(`🎤 Follow-up speech final: "${transcript}"`);
+                        stopFollowUpListening(false); // Don't restart wake word - we're processing
+
+                        // Directly submit to chat (don't rely on stopRecording which checks isRecording)
+                        const userInput = document.getElementById('userInput');
+                        if (userInput) {
+                            userInput.value = transcript;
+                        }
+                        finalTranscript = ''; // Reset
+
+                        // Submit the message
+                        sendMessage();
+
+                        // 🔧 FIX: Clear userInput immediately to prevent onend handler from calling sendMessage again
+                        if (userInput) {
+                            userInput.value = '';
+                        }
+                        return; // Don't fall through to other handlers
+                    }
                 }
 
                 let interimTranscript = '';
                 
+                // Cancel any pending fallback submit while we're still receiving audio
+                if (fallbackSubmitTimeout) {
+                    clearTimeout(fallbackSubmitTimeout);
+                    fallbackSubmitTimeout = null;
+                }
+
                 // Use the parent-scoped finalTranscript to accumulate results
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
                     const transcript = event.results[i][0].transcript;
@@ -1693,6 +1827,42 @@
                     } else {
                         console.log(`🔍 Low confidence interim: "${transcript}" (confidence: ${confidence ? confidence.toFixed(2) : 'N/A'})`);
                     }
+                } else if (isAlwaysListeningActive && isAlwaysListeningMode) {
+                    // 🎤 Always-listening mode: process speech and send to chat
+                    const latestResult = event.results[event.results.length - 1];
+                    const transcript = latestResult[0].transcript.trim();
+                    const confidence = latestResult[0].confidence;
+                    const now = Date.now();
+
+                    // Update indicator to show we're hearing something
+                    if (transcript && transcript.length > 0) {
+                        updateAlwaysListeningIndicator('listening', '聽到...', transcript.substring(0, 25));
+                    }
+
+                    // Only process final results with sufficient length
+                    if (latestResult.isFinal && transcript.length >= 2) {
+                        // Skip duplicates within 3 seconds
+                        if (transcript === lastProcessedCommand && (now - lastProcessedTime) < 3000) {
+                            console.log(`[AlwaysListen] Skipping duplicate: "${transcript}"`);
+                            return;
+                        }
+
+                        console.log(`[AlwaysListen] Final result (confidence: ${confidence?.toFixed(2) || 'N/A'}): "${transcript}"`);
+
+                        // Process the speech
+                        lastProcessedCommand = transcript;
+                        lastProcessedTime = now;
+                        finalTranscript = '';
+
+                        // Stop recognition before processing (will restart after TTS)
+                        isAlwaysListeningActive = false;
+                        try {
+                            browserRecognition.stop();
+                        } catch (e) { /* ignore */ }
+
+                        // Process the speech
+                        processAlwaysListeningSpeech(transcript);
+                    }
                 } else {
                     // This is for normal "hold-to-talk" recording
                     const userInput = document.getElementById('userInput');
@@ -1716,6 +1886,13 @@
                                 console.log('✅ High confidence: submitting.');
                                 stopRecording();
                             }, confidenceTimeoutDuration);
+                        } else if (finalTranscript.trim().length >= 2) {
+                            // Fallback: auto-submit short time after any final result with content
+                            if (fallbackSubmitTimeout) clearTimeout(fallbackSubmitTimeout);
+                            fallbackSubmitTimeout = setTimeout(() => {
+                                console.log('✅ Final result fallback: submitting.');
+                                stopRecording();
+                            }, 700);
                         }
                     }
                 }
@@ -1732,7 +1909,8 @@
 
             // If a massage session is active, pressing the mic button
             // should trigger the session's listening mode.
-            if (currentMassageSession && !currentMassageSession.isWaitingForResponse) {
+            // 🔧 FIX: Also check isMassageSessionActive to prevent false triggers after massage completes
+            if (isMassageSessionActive && currentMassageSession && !currentMassageSession.isWaitingForResponse) {
                 console.log("🎤 Manually triggering massage session voice listening.");
                 await currentMassageSession.activateVoiceListening();
                 return; // Exit to not start a manual recording
@@ -1742,6 +1920,17 @@
                 console.log(`[ASR] startRecording aborted. isRecording: ${isRecording}, isAutoListening: ${isAutoListening}`);
                 return;
             }
+
+            // Clear any leftover intentional-stop flag so normal onend can submit
+            isIntentionalStop = false;
+
+            // If always-listening is active, stop it first (user wants manual control)
+            if (isAlwaysListeningActive) {
+                console.log('[ASR] Stopping always-listening for manual recording');
+                stopAlwaysListening();
+                await new Promise(resolve => setTimeout(resolve, 250));
+            }
+
             console.log('[ASR] Starting manual recording...');
             isRecording = true;
 
@@ -1770,7 +1959,8 @@
             }
 
             // If a massage session is active and listening, releasing the button should stop it.
-            if (currentMassageSession && currentMassageSession.isWaitingForResponse) {
+            // 🔧 FIX: Also check isMassageSessionActive to prevent false triggers after massage completes
+            if (isMassageSessionActive && currentMassageSession && currentMassageSession.isWaitingForResponse) {
                 console.log("🎤 Manually stopping massage session voice listening.");
                 currentMassageSession.cancelVoiceListening();
                 return; // Exit to not stop a manual recording
@@ -2047,6 +2237,8 @@
                 // Task state is committed FIRST, TTS is fire-and-forget
                 // ============================================================
                 isMassageSessionActive = true;
+                pendingFollowUp = false; // Clear any pending follow-up
+                stopFollowUpListening(false); // Stop any active follow-up
                 console.log('🎯 Massage session started - Continuous listening enabled.');
 
                 // ============================================================
@@ -2289,6 +2481,9 @@
                 removePauseResumeButton();
 
                 console.log('🛑 Massage session stopping...');
+                // Clear follow-up and stop continuous listening immediately to free the mic
+                pendingFollowUp = false;
+                stopContinuousMassageListening();
 
                 // ============================================================
                 // 🔧 END TTS SESSION: Prevents any queued TTS from playing
@@ -2323,9 +2518,8 @@
                     addSystemMessage(`✅ ${completeDialogue}`, 'info');
                 }
 
-                // NOW deactivate the session after speaking
+                // NOW deactivate the session (do this early so user can ask new things immediately)
                 isMassageSessionActive = false;
-                stopContinuousMassageListening();
                 console.log('✅ Massage session stopped - Continuous listening disabled.');
 
                 // Emit task completed event
@@ -2339,13 +2533,19 @@
                     );
                 }
 
-                // Resume wake word detection for normal mode
+                // Resume wake word mode after massage session completes
                 setTimeout(() => {
-                    if (wakeWordDetector && !wakeWordDetector.isListening) {
-                        wakeWordDetector.start();
-                        console.log('🎤 Wake word detection resumed');
+                    const wakeWordToggle = document.getElementById('wakeWordToggle');
+                    if (wakeWordToggle?.checked && wakeWordDetector) {
+                        stopFollowUpListening(false);
+                        hideListeningIndicator();
+
+                        if (!wakeWordDetector.isListening) {
+                            wakeWordDetector.start();
+                            console.log('🎤 Wake word detection resumed after massage complete');
+                        }
                     }
-                }, 1000);
+                }, 1500);
 
                 // Hide controls after session ends
                 setTimeout(() => {
@@ -2365,6 +2565,7 @@
                 // 🔧 FIX: Immediately clear session state to prevent race condition
                 // This MUST happen first, before any async operations
                 isMassageSessionActive = false;
+                pendingFollowUp = false; // Clear any pending follow-up
                 const sessionToStop = currentMassageSession;
                 currentMassageSession = null;
 
@@ -2427,13 +2628,20 @@
                     console.warn('⚠️ TTS announcement failed, but stop succeeded:', err);
                 });
 
-                // Resume wake word detection for normal mode
+                // Resume wake word mode after emergency stop
                 setTimeout(() => {
-                    if (wakeWordDetector && !wakeWordDetector.isListening) {
-                        wakeWordDetector.start();
-                        console.log('🎤 Wake word detection resumed after emergency stop');
+                    const wakeWordToggle = document.getElementById('wakeWordToggle');
+                    if (wakeWordToggle?.checked && wakeWordDetector) {
+                        // Stop any lingering follow-up mode first
+                        stopFollowUpListening(false);
+                        hideListeningIndicator();
+
+                        if (!wakeWordDetector.isListening) {
+                            wakeWordDetector.start();
+                            console.log('🎤 Wake word detection resumed after emergency stop');
+                        }
                     }
-                }, 1000);
+                }, 1500); // Wait for TTS announcement to finish
             }
         }
 
@@ -2537,6 +2745,13 @@
                 wakeWordDetector.stop();
                 await new Promise(resolve => setTimeout(resolve, 250));
             }
+            // Stop always-listening mode if active
+            if (isAlwaysListeningActive || isAlwaysListeningMode) {
+                console.log('[AlwaysListen] Stopping for massage session');
+                isAlwaysListeningMode = false; // Temporarily disable mode
+                stopAlwaysListening();
+                await new Promise(resolve => setTimeout(resolve, 250));
+            }
 
             if (!browserRecognition) {
                 initBrowserSpeechRecognition();
@@ -2604,6 +2819,175 @@
             }
         }
 
+        // ===== Follow-Up Conversation Mode Functions (跟進對話) =====
+
+        /**
+         * Start follow-up listening mode after AI responds
+         * Similar to Siri: keeps listening for a few seconds for follow-up questions
+         */
+        function startFollowUpListening() {
+            // Don't start if massage session is active (it has its own listening)
+            if (isMassageSessionActive) {
+                console.log('[FollowUp] Skipped - massage session active');
+                return;
+            }
+
+            // Don't start if TTS is still playing
+            if (isTTSPlaying) {
+                console.log('[FollowUp] Skipped - TTS still playing');
+                return;
+            }
+
+            // Clear any existing follow-up timer
+            stopFollowUpListening(false); // false = don't restart wake word yet
+
+            console.log('[FollowUp] Starting follow-up listening mode...');
+            isFollowUpListening = true;
+            followUpTimeRemaining = FOLLOW_UP_DURATION;
+
+            // Show follow-up indicator with countdown
+            updateFollowUpIndicator();
+
+            // Start speech recognition
+            if (browserRecognition) {
+                try {
+                    // Stop wake word detector while in follow-up mode
+                    if (wakeWordDetector && wakeWordDetector.isListening) {
+                        wakeWordDetector.stop();
+                    }
+
+                    browserRecognition.start();
+                    lastRecognitionActivity = Date.now();
+                    console.log('[FollowUp] Speech recognition started');
+                } catch (error) {
+                    if (error.message && error.message.includes('already started')) {
+                        console.log('[FollowUp] Recognition already running');
+                    } else {
+                        console.error('[FollowUp] Failed to start recognition:', error);
+                        stopFollowUpListening(true);
+                        return;
+                    }
+                }
+            }
+
+            // Start countdown interval (update UI every 100ms)
+            followUpCountdownInterval = setInterval(() => {
+                followUpTimeRemaining -= 100;
+                updateFollowUpIndicator();
+
+                if (followUpTimeRemaining <= 0) {
+                    console.log('[FollowUp] Timeout - returning to wake word mode');
+                    stopFollowUpListening(true);
+                }
+            }, 100);
+
+            // Set main timeout as backup
+            followUpTimer = setTimeout(() => {
+                console.log('[FollowUp] Timer expired');
+                stopFollowUpListening(true);
+            }, FOLLOW_UP_DURATION + 500); // Extra 500ms buffer
+        }
+
+        /**
+         * Stop follow-up listening and optionally restart wake word detector
+         * @param {boolean} restartWakeWord - Whether to restart wake word detector
+         */
+        function stopFollowUpListening(restartWakeWord = true) {
+            console.log('[FollowUp] Stopping follow-up mode');
+
+            // Clear timers
+            if (followUpTimer) {
+                clearTimeout(followUpTimer);
+                followUpTimer = null;
+            }
+            if (followUpCountdownInterval) {
+                clearInterval(followUpCountdownInterval);
+                followUpCountdownInterval = null;
+            }
+
+            // Reset state
+            isFollowUpListening = false;
+            followUpTimeRemaining = 0;
+            pendingFollowUp = false; // Clear pending flag too
+
+            // Hide indicator
+            hideListeningIndicator();
+
+            // Stop recognition if running (but not during massage)
+            if (browserRecognition && !isMassageSessionActive && !isAutoListening) {
+                try {
+                    isIntentionalStop = true;
+                    browserRecognition.stop();
+                } catch (e) {
+                    // Ignore errors when stopping
+                }
+            }
+
+            // Restart wake word detector if requested
+            if (restartWakeWord && !isMassageSessionActive) {
+                const wakeWordToggle = document.getElementById('wakeWordToggle');
+                if (wakeWordDetector && wakeWordToggle?.checked) {
+                    console.log('[FollowUp] Resuming wake word detector');
+                    setTimeout(() => {
+                        if (!isTTSPlaying && !isMassageSessionActive && !isFollowUpListening) {
+                            wakeWordDetector.start();
+                        }
+                    }, 300);
+                }
+            }
+        }
+
+        /**
+         * Extend follow-up timer when user starts speaking
+         * Called when interim speech results are detected
+         */
+        function extendFollowUpTimer() {
+            if (!isFollowUpListening) return;
+
+            console.log('[FollowUp] User speaking - extending timer');
+
+            // Reset to extension duration
+            followUpTimeRemaining = FOLLOW_UP_EXTENSION;
+
+            // Reset the main timeout
+            if (followUpTimer) {
+                clearTimeout(followUpTimer);
+            }
+            followUpTimer = setTimeout(() => {
+                console.log('[FollowUp] Extended timer expired');
+                stopFollowUpListening(true);
+            }, FOLLOW_UP_EXTENSION + 500);
+
+            updateFollowUpIndicator();
+        }
+
+        /**
+         * Update the follow-up indicator with countdown
+         */
+        function updateFollowUpIndicator() {
+            const indicator = document.getElementById('autoListeningIndicator');
+            if (!indicator) return;
+
+            const seconds = Math.ceil(followUpTimeRemaining / 1000);
+            const progressPercent = (followUpTimeRemaining / FOLLOW_UP_DURATION) * 100;
+
+            indicator.innerHTML = `
+                <div class="follow-up-indicator">
+                    <div class="listening-animation">
+                        <span class="listening-dot"></span>
+                        <span class="listening-dot"></span>
+                        <span class="listening-dot"></span>
+                    </div>
+                    <span class="listening-text">繼續對話... (${seconds}秒)</span>
+                    <div class="follow-up-progress">
+                        <div class="follow-up-progress-bar" style="width: ${progressPercent}%"></div>
+                    </div>
+                </div>
+            `;
+            indicator.style.display = 'flex';
+            indicator.className = 'listening-indicator follow-up-mode';
+        }
+
         // 🎯 Show visual feedback when command is recognized
         function showCommandRecognized(command) {
             const indicator = document.getElementById('autoListeningIndicator');
@@ -2653,6 +3037,262 @@
 
             oscillator.start(audioContext.currentTime);
             oscillator.stop(audioContext.currentTime + 0.1);
+        }
+
+        // ===== Always-Listening Mode Functions =====
+
+        /**
+         * Update the listening indicator with state-specific styling
+         * @param {string} state - 'ready', 'listening', 'processing', 'not-ready', 'error'
+         * @param {string} message - Display message
+         * @param {string} subtext - Optional subtext for additional info
+         */
+        function updateAlwaysListeningIndicator(state, message, subtext = '') {
+            alwaysListeningState = state;
+            const indicator = document.getElementById('autoListeningIndicator');
+            if (!indicator) return;
+
+            // Remove old state classes
+            indicator.classList.remove('ready', 'not-ready', 'processing', 'error', 'listening');
+
+            // Build indicator HTML with subtext support
+            indicator.innerHTML = `
+                <div class="listening-animation">
+                    <span class="listening-dot"></span>
+                    <span class="listening-dot"></span>
+                    <span class="listening-dot"></span>
+                </div>
+                <div class="listening-status">
+                    <span class="listening-text">${message}</span>
+                    ${subtext ? `<span class="listening-subtext">${subtext}</span>` : ''}
+                </div>
+            `;
+
+            // Add new state class and show
+            indicator.classList.add(state, 'always-listening');
+            indicator.style.display = 'flex';
+
+            console.log(`[AlwaysListen] State: ${state} - ${message}${subtext ? ' (' + subtext + ')' : ''}`);
+        }
+
+        /**
+         * Start always-listening mode - continuously detect and process speech
+         */
+        async function startAlwaysListening() {
+            if (isAlwaysListeningActive || isMassageSessionActive || isRecording) {
+                console.log('[AlwaysListen] Cannot start - already active or blocked by other mode');
+                return;
+            }
+
+            // 🔧 FIX: Check if permission was denied - require user gesture to retry
+            if (alwaysListeningPermissionDenied) {
+                console.log('[AlwaysListen] Cannot start - permission was denied, need user gesture');
+                updateAlwaysListeningIndicator('error', '需要麥克風權限', '請點擊「重啟語音檢測」');
+                return;
+            }
+
+            console.log('[AlwaysListen] Starting always-listening mode...');
+
+            // Stop wake word detector if running
+            if (wakeWordDetector && wakeWordDetector.isListening) {
+                wakeWordDetector.stop();
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+
+            // Initialize browser recognition if needed
+            if (!browserRecognition) {
+                initBrowserSpeechRecognition();
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            try {
+                isAlwaysListeningActive = true;
+                isAlwaysListeningMode = true;
+                browserRecognition.start();
+                // 🔧 FIX: Reset retry count on successful start
+                alwaysListeningRetryCount = 0;
+                updateAlwaysListeningIndicator('ready', '持續聆聽', '準備好了');
+                lastRecognitionActivity = Date.now();
+                startAlwaysListeningHealthCheck();
+                console.log('[AlwaysListen] Started successfully');
+            } catch (error) {
+                if (error.message && error.message.includes('already started')) {
+                    console.log('[AlwaysListen] Recognition already running, keeping active');
+                    isAlwaysListeningActive = true;
+                    alwaysListeningRetryCount = 0; // Reset on success
+                    updateAlwaysListeningIndicator('ready', '持續聆聽', '準備好了');
+                } else if (error.name === 'NotAllowedError' || error.message?.includes('not-allowed')) {
+                    // 🔧 FIX: Handle permission denied error in catch block too
+                    console.error('[AlwaysListen] Permission denied in catch:', error);
+                    alwaysListeningPermissionDenied = true;
+                    isAlwaysListeningActive = false;
+                    updateAlwaysListeningIndicator('error', '需要麥克風權限', '請點擊「重啟語音檢測」');
+                } else {
+                    console.error('[AlwaysListen] Failed to start:', error);
+                    isAlwaysListeningActive = false;
+                    alwaysListeningRetryCount++;
+
+                    // Retry after delay (with limit)
+                    if (!alwaysListeningPermissionDenied && alwaysListeningRetryCount < ALWAYS_LISTENING_MAX_RETRIES) {
+                        updateAlwaysListeningIndicator('error', '啟動失敗', `重試中 (${alwaysListeningRetryCount}/${ALWAYS_LISTENING_MAX_RETRIES})`);
+                        setTimeout(() => {
+                            if (isAlwaysListeningMode && !isAlwaysListeningActive && !alwaysListeningPermissionDenied) {
+                                startAlwaysListening();
+                            }
+                        }, 2000);
+                    } else {
+                        updateAlwaysListeningIndicator('error', '無法啟動', '請點擊「重啟語音檢測」');
+                    }
+                }
+            }
+        }
+
+        /**
+         * Stop always-listening mode
+         */
+        function stopAlwaysListening() {
+            if (!isAlwaysListeningActive && !isAlwaysListeningMode) return;
+
+            console.log('[AlwaysListen] Stopping always-listening mode...');
+            isAlwaysListeningActive = false;
+            isAlwaysListeningMode = false;
+            stopAlwaysListeningHealthCheck();
+
+            if (browserRecognition) {
+                try {
+                    browserRecognition.stop();
+                } catch (e) {
+                    console.warn('[AlwaysListen] Error stopping recognition:', e);
+                }
+            }
+
+            hideListeningIndicator();
+            console.log('[AlwaysListen] Stopped');
+        }
+
+        /**
+         * Pause always-listening temporarily (e.g., during TTS)
+         */
+        function pauseAlwaysListening() {
+            if (!isAlwaysListeningActive) return;
+
+            console.log('[AlwaysListen] Pausing for TTS...');
+            isIntentionalStop = true;
+
+            if (browserRecognition) {
+                try {
+                    browserRecognition.stop();
+                } catch (e) {
+                    console.warn('[AlwaysListen] Error pausing:', e);
+                }
+            }
+
+            updateAlwaysListeningIndicator('not-ready', '暫停中', 'TTS 播放中');
+        }
+
+        /**
+         * Resume always-listening after TTS or pause
+         */
+        function resumeAlwaysListening() {
+            if (!isAlwaysListeningMode || isMassageSessionActive) {
+                console.log('[AlwaysListen] Resume skipped - mode disabled or massage active');
+                return;
+            }
+
+            // 🔧 FIX: Don't resume if permission was denied
+            if (alwaysListeningPermissionDenied) {
+                console.log('[AlwaysListen] Resume skipped - permission denied, need user gesture');
+                return;
+            }
+
+            console.log('[AlwaysListen] Resuming...');
+            isAlwaysListeningActive = false; // Reset to allow restart
+
+            setTimeout(() => {
+                if (isAlwaysListeningMode && !isAlwaysListeningActive && !isMassageSessionActive && !isTTSPlaying && !alwaysListeningPermissionDenied) {
+                    startAlwaysListening();
+                }
+            }, 300);
+        }
+
+        /**
+         * Health check for always-listening mode - auto-restart if stuck
+         */
+        function startAlwaysListeningHealthCheck() {
+            stopAlwaysListeningHealthCheck();
+
+            console.log('[AlwaysListen] Starting health check');
+            alwaysListeningHealthCheck = setInterval(() => {
+                if (!isAlwaysListeningMode) {
+                    stopAlwaysListeningHealthCheck();
+                    return;
+                }
+
+                // 🔧 FIX: Stop health check if permission was denied
+                if (alwaysListeningPermissionDenied) {
+                    console.log('[AlwaysListen] Health check stopped - permission denied');
+                    stopAlwaysListeningHealthCheck();
+                    return;
+                }
+
+                // Skip during TTS or massage
+                if (isTTSPlaying || isMassageSessionActive) {
+                    return;
+                }
+
+                const timeSinceActivity = Date.now() - lastRecognitionActivity;
+
+                // Check if recognition seems stuck (no activity for 20 seconds)
+                if (timeSinceActivity > 20000 && !isAlwaysListeningActive && !alwaysListeningPermissionDenied) {
+                    console.warn('[AlwaysListen] Recognition stopped unexpectedly, restarting...');
+                    startAlwaysListening();
+                }
+
+                // Check if listening might be stuck (40 seconds no activity while supposedly active)
+                if (timeSinceActivity > 40000 && isAlwaysListeningActive && !alwaysListeningPermissionDenied) {
+                    console.warn('[AlwaysListen] Recognition may be stuck, forcing restart...');
+                    isAlwaysListeningActive = false;
+                    startAlwaysListening();
+                }
+
+                // Update indicator to show healthy state
+                if (isAlwaysListeningActive && alwaysListeningState !== 'processing') {
+                    updateAlwaysListeningIndicator('ready', '持續聆聽', '準備好了');
+                }
+            }, 5000);
+        }
+
+        /**
+         * Stop health check interval
+         */
+        function stopAlwaysListeningHealthCheck() {
+            if (alwaysListeningHealthCheck) {
+                console.log('[AlwaysListen] Stopping health check');
+                clearInterval(alwaysListeningHealthCheck);
+                alwaysListeningHealthCheck = null;
+            }
+        }
+
+        /**
+         * Process speech result in always-listening mode
+         * @param {string} transcript - Recognized speech text
+         */
+        async function processAlwaysListeningSpeech(transcript) {
+            if (!transcript || !transcript.trim()) return;
+
+            console.log(`[AlwaysListen] Processing: "${transcript}"`);
+            updateAlwaysListeningIndicator('processing', '處理中...', transcript.substring(0, 20));
+
+            // Put transcript in input field
+            const userInput = document.getElementById('userInput');
+            if (userInput) {
+                userInput.value = transcript;
+            }
+
+            // Send to chat
+            await sendMessage();
+
+            // Recognition will restart via onend handler
         }
 
         // This function is no longer needed for massage sessions but might be called from elsewhere.
@@ -3611,6 +4251,7 @@
             if (window.robustTTS) {
                 const wasListening = isAutoListening;
                 const wasWakeWordActive = wakeWordDetector && wakeWordDetector.isListening;
+                const wasAlwaysListening = isAlwaysListeningActive;
 
                 // Pause listening during TTS (will auto-resume via onSpeakingEnd callback)
                 if (wasListening) {
@@ -3621,6 +4262,11 @@
                 if (wasWakeWordActive) {
                     console.log("🎤 Stopping wake word detector for TTS.");
                     wakeWordDetector.stop();
+                }
+                // Pause always-listening mode during TTS
+                if (wasAlwaysListening) {
+                    console.log("🎤 Pausing always-listening for TTS.");
+                    pauseAlwaysListening();
                 }
 
                 const cleanText = stripHTML(text);
@@ -3634,8 +4280,11 @@
                     try {
                         await playCachedAudioBlob(cachedBlob);
                         console.log(`✅ Cache playback complete: ${processedText.substring(0, 25)}...`);
-                        // Resume wake word if needed
-                        if (wasWakeWordActive && !isMassageSessionActive) {
+                        // Resume listening modes as appropriate
+                        if (wasAlwaysListening && !isMassageSessionActive) {
+                            console.log("🎤 Resuming always-listening after cache playback.");
+                            resumeAlwaysListening();
+                        } else if (wasWakeWordActive && !isMassageSessionActive) {
                             if (wakeWordDetector && !wakeWordDetector.isListening) {
                                 wakeWordDetector.start();
                             }
@@ -3662,8 +4311,11 @@
                     console.warn('[playCantoneseTTS] TTS completed with error (task continues):', error.message);
                 }
 
-                // Resume wake word if needed (listening resumes via callback)
-                if (wasWakeWordActive && !isMassageSessionActive) {
+                // Resume listening modes as appropriate
+                if (wasAlwaysListening && !isMassageSessionActive) {
+                    console.log("🎤 Resuming always-listening after robust TTS.");
+                    resumeAlwaysListening();
+                } else if (wasWakeWordActive && !isMassageSessionActive) {
                     if (wakeWordDetector && !wakeWordDetector.isListening) {
                         wakeWordDetector.start();
                     }
@@ -3690,6 +4342,7 @@
             isTTSPlaying = true;
             const wasListening = isAutoListening;
             const wasWakeWordActive = wakeWordDetector && wakeWordDetector.isListening;
+            const wasAlwaysListening = isAlwaysListeningActive;
 
             try {
                 if (wasListening) {
@@ -3700,6 +4353,11 @@
                 if (wasWakeWordActive) {
                     console.log("🎤 Stopping wake word detector to prevent self-listening during TTS.");
                     wakeWordDetector.stop();
+                }
+                // Pause always-listening mode during legacy TTS
+                if (wasAlwaysListening) {
+                    console.log("🎤 Pausing always-listening for legacy TTS.");
+                    pauseAlwaysListening();
                 }
 
                 const indicator = document.getElementById('speakingIndicator');
@@ -3744,6 +4402,9 @@
                 if (wasListening && isMassageSessionActive) {
                     console.log("🛡️ Finally block: Resuming continuous listening for massage.");
                     safeRestartMassageListening();
+                } else if (wasAlwaysListening && !isMassageSessionActive) {
+                    console.log("🛡️ Finally block: Resuming always-listening.");
+                    resumeAlwaysListening();
                 } else if (meta.isFollowUp) {
                     console.log("🛡️ Finally block: Starting follow-up listening.");
                     startFollowUpListening();
@@ -4413,7 +5074,11 @@
 請始終保持專業、關懷的態度，優先考慮用戶的安全和舒適。`;
 
         async function sendMessage() {
-            if (isMassageSessionActive) {
+            // If massage flag is stuck but no session exists, clear it so chat can proceed
+            if (isMassageSessionActive && !currentMassageSession) {
+                console.warn("⚠️ Stale massage state detected, resetting so chat can proceed.");
+                isMassageSessionActive = false;
+            } else if (isMassageSessionActive) {
                 console.warn("⚠️ sendMessage blocked during an active massage session to prevent conflicting TTS.");
                 const userInput = document.getElementById('userInput');
                 if (userInput) userInput.value = ''; // Clear input from any race condition
@@ -4439,12 +5104,32 @@
             if (window.ultraFastTTS) {
                 window.ultraFastTTS.stop();
             } else {
-                window.ultraFastTTS = new UltraFastTTSPlayer();
+                // Fallback initialization (should rarely happen)
+                window.ultraFastTTS = new UltraFastTTSPlayer({
+                    onComplete: () => {
+                        if (pendingFollowUp) {
+                            pendingFollowUp = false;
+                            const wakeWordToggle = document.getElementById('wakeWordToggle');
+                            if (!isMassageSessionActive && wakeWordToggle?.checked) {
+                                console.log('[UltraFastTTS] TTS complete, starting follow-up mode');
+                                startFollowUpListening();
+                            }
+                        }
+                    }
+                });
             }
             audioQueue.stop();
             sentenceDetector.reset();
             lastResponse = '';
             isInCommandBlock = false;
+
+            // 🎤 Set follow-up flag if wake word is enabled (will trigger after TTS completes)
+            const wakeWordToggle = document.getElementById('wakeWordToggle');
+            if (wakeWordToggle?.checked && !isMassageSessionActive) {
+                stopFollowUpListening(false); // Stop any existing follow-up first (this clears pendingFollowUp)
+                pendingFollowUp = true; // THEN set the flag (must be after stopFollowUpListening!)
+                console.log('[FollowUp] Flagged for follow-up after chat response');
+            }
 
             // 禁用輸入
             document.getElementById('sendButton').disabled = true;
@@ -4498,10 +5183,24 @@
                         // If a command was executed, the session will handle its own TTS.
                         // If not, flush the normal chat response to the TTS player.
                         const commandExecuted = await parseAndExecuteCommand(fullResponse, prompt);
-                        if (!commandExecuted && document.getElementById('autoSpeak').checked) {
+                        if (commandExecuted) {
+                            // Command executed - clear follow-up flag (massage session has own listening)
+                            pendingFollowUp = false;
+                        } else if (document.getElementById('autoSpeak').checked) {
                             window.ultraFastTTS.flush();
+                            // Follow-up will be triggered by ultraFastTTS.onComplete callback
+                        } else {
+                            // Auto-speak disabled - no TTS, start follow-up immediately
+                            if (pendingFollowUp) {
+                                pendingFollowUp = false;
+                                const wakeWordToggle = document.getElementById('wakeWordToggle');
+                                if (!isMassageSessionActive && wakeWordToggle?.checked) {
+                                    console.log('[FollowUp] No TTS, starting follow-up immediately');
+                                    startFollowUpListening();
+                                }
+                            }
                         }
-                        
+
                         // ✅ 解析並執行指令 (This line is now moved up and modified)
                         // await parseAndExecuteCommand(fullResponse, prompt);
                         break;
@@ -4527,10 +5226,9 @@
                                         setFoxState(null);
                                     }
 
-                                    displayText += content;
-                                    fullResponse += content;
-
                                     const cleanChunk = filterCommandBlockChunk(content);
+                                    displayText += cleanChunk; // Keep UI in sync with spoken content
+                                    fullResponse += cleanChunk;
                                     lastResponse += cleanChunk;
                                     const sanitizedDisplay = removeCommandBlocks(displayText);
                                     
@@ -4751,10 +5449,25 @@
                     if (asrEngineSelect && settings.asrEngine) asrEngineSelect.value = settings.asrEngine;
                     
                     const wakeWordToggle = document.getElementById('wakeWordToggle');
-                    if (wakeWordToggle && settings.wakeWord) {
-                        wakeWordToggle.checked = true;
-                        if (wakeWordDetector) {
-                            setTimeout(() => wakeWordDetector.start(), 1000);
+                    const listeningModeDesc = document.getElementById('listeningModeDesc');
+                    const listeningModeInfo = document.querySelector('.listening-mode-info');
+
+                    if (wakeWordToggle) {
+                        if (settings.wakeWord !== false) {
+                            // Wake word mode enabled (default)
+                            wakeWordToggle.checked = true;
+                            if (wakeWordDetector) {
+                                setTimeout(() => wakeWordDetector.start(), 1000);
+                            }
+                            if (listeningModeDesc) {
+                                listeningModeDesc.textContent = '✅ 講「護理員」開始對話';
+                            }
+                        } else {
+                            // Voice activation disabled
+                            wakeWordToggle.checked = false;
+                            if (listeningModeDesc) {
+                                listeningModeDesc.textContent = '❌ 語音喚醒已停用';
+                            }
                         }
                     }
 
@@ -5125,7 +5838,29 @@ function autoFillControlsFromText(text) {
             // 初始化核心組件
             audioQueue = new OptimizedAudioPlayer();
             sentenceDetector = new SmartSentenceDetector();
-            window.ultraFastTTS = new UltraFastTTSPlayer();  // Initialize once at startup
+
+            // 🎤 Initialize UltraFastTTS with follow-up mode callback
+            window.ultraFastTTS = new UltraFastTTSPlayer({
+                onComplete: () => {
+                    // Debug: log state when TTS completes
+                    const wakeWordToggle = document.getElementById('wakeWordToggle');
+                    console.log('[UltraFastTTS] onComplete state:', {
+                        pendingFollowUp,
+                        isMassageSessionActive,
+                        wakeWordChecked: wakeWordToggle?.checked,
+                        isFollowUpListening
+                    });
+
+                    // Trigger follow-up listening after chat TTS completes
+                    if (pendingFollowUp) {
+                        pendingFollowUp = false;
+                        if (!isMassageSessionActive && wakeWordToggle?.checked) {
+                            console.log('[UltraFastTTS] TTS complete, starting follow-up mode');
+                            startFollowUpListening();
+                        }
+                    }
+                }
+            });
             initAnswerLevelSetting();
 
             // ============================================================
@@ -5152,6 +5887,16 @@ function autoFillControlsFromText(text) {
                         if (isMassageSessionActive && !isAutoListening) {
                             safeRestartMassageListening();
                         }
+
+                        // 🎤 Start follow-up listening if flagged (only after chat responses)
+                        if (pendingFollowUp) {
+                            pendingFollowUp = false; // Reset flag
+                            const wakeWordToggle = document.getElementById('wakeWordToggle');
+                            if (!isMassageSessionActive && wakeWordToggle?.checked) {
+                                console.log('[TTS] Speaking ended, starting follow-up mode');
+                                startFollowUpListening();
+                            }
+                        }
                     },
                     onError: (error) => {
                         console.warn('[RobustTTS] Error handled gracefully:', error.message);
@@ -5162,6 +5907,13 @@ function autoFillControlsFromText(text) {
                 // Subscribe TTS to assistant events (decoupled from task state)
                 EventBus.on(TTSEvents.ASSISTANT_REPLY, (payload) => {
                     if (document.getElementById('autoSpeak')?.checked) {
+                        // 🎤 Set flag for follow-up mode (only for non-massage chat)
+                        const wakeWordToggle = document.getElementById('wakeWordToggle');
+                        if (!isMassageSessionActive && wakeWordToggle?.checked) {
+                            pendingFollowUp = true;
+                            console.log('[FollowUp] Flagged for follow-up after TTS');
+                        }
+
                         window.robustTTS.speak(payload.text, {
                             voice: payload.voice,
                             priority: payload.priority || 'normal',
@@ -5275,12 +6027,33 @@ function autoFillControlsFromText(text) {
                     }
 
                     wakeWordToggle.addEventListener('change', () => {
+                        const listeningModeDesc = document.getElementById('listeningModeDesc');
+
                         if (wakeWordToggle.checked) {
+                            // Enable wake word mode with follow-up conversation
+                            console.log('[Settings] Enabling wake word mode');
+                            stopAlwaysListening(); // Stop any always-listening (backward compat)
+                            stopFollowUpListening(false); // Stop follow-up if active
                             wakeWordDetector.start();
                             if (restartWakeWordBtn) restartWakeWordBtn.disabled = false;
+
+                            // Update UI description
+                            if (listeningModeDesc) {
+                                listeningModeDesc.textContent = '✅ 講「護理員」開始對話';
+                            }
                         } else {
+                            // Disable all voice activation
+                            console.log('[Settings] Disabling voice activation');
                             wakeWordDetector.stop();
+                            stopAlwaysListening();
+                            stopFollowUpListening(false);
+                            hideListeningIndicator();
                             if (restartWakeWordBtn) restartWakeWordBtn.disabled = true;
+
+                            // Update UI description
+                            if (listeningModeDesc) {
+                                listeningModeDesc.textContent = '❌ 語音喚醒已停用';
+                            }
                         }
                         saveSettings();
                     });
@@ -5295,11 +6068,12 @@ function autoFillControlsFromText(text) {
                 }
             }
 
-            // Event listener for the new manual restart button
+            // Event listener for the manual restart button
             if (restartWakeWordBtn) {
                 restartWakeWordBtn.addEventListener('click', () => {
-                    if (wakeWordDetector) {
-                        console.log('🔄 Manual restart triggered');
+                    const wakeWordToggle = document.getElementById('wakeWordToggle');
+                    if (wakeWordToggle?.checked && wakeWordDetector) {
+                        console.log('🔄 Manual restart: restarting wake word detector');
                         wakeWordDetector.restart();
                     }
                 });
